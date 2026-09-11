@@ -236,6 +236,28 @@ st.markdown(
         padding: .8rem 1rem;
         border-radius: 12px;
     }
+
+    /* Streamlit-Oberflächen ausblenden */
+    [data-testid="stHeader"] {
+        display: none;
+    }
+
+    [data-testid="stToolbar"] {
+        display: none;
+    }
+
+    footer {
+        display: none;
+    }
+
+    #MainMenu {
+        display: none;
+    }
+
+    /* App beginnt ganz oben */
+    .block-container {
+        padding-top: 1.2rem !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
