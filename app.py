@@ -1,20 +1,34 @@
+# ============================================================
+# Semesterplaner
+# ============================================================
+"""
+Streamlit-App, die Prüfungen, Aufträge und Ämtli aus einer JSON-Datei
+in einem privaten GitHub-Repository lädt und daraus automatisch einen
+Tages-, Wochen- und Monatsplan erstellt.
+
+Wichtiger Hinweis zur Struktur:
+Alle HTML-Ausgaben laufen über render_html().
+Diese Funktion entfernt führende Leerzeichen aus jeder Zeile,
+bevor der Text an st.markdown() übergeben wird.
+Grund: Streamlits Markdown-Parser interpretiert Zeilen mit vier
+oder mehr führenden Leerzeichen als Codeblock.
+Mehrzeilige, eingerückte f-Strings mit HTML wurden dadurch als
+reiner Text (mit sichtbaren <div>-Tags) statt als gerendertes HTML
+angezeigt.
+"""
+
+from __future__ import annotations
+
 import calendar
-import json
 from datetime import date, datetime, timedelta
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 # ============================================================
-# Semesterplaner – Streamlit
-# Datenquelle: private GitHub-Repository
-#
-# .streamlit/secrets.toml:
-# GITHUB_TOKEN = "ghp_..."
-# GITHUB_REPO = "owner/repository"
-# GITHUB_FILE = "daten.json"
-# GITHUB_BRANCH = "main"
+# KONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -24,601 +38,456 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ----------------------------- Styling -----------------------------
 
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Libre+Baskerville:wght@700&family=Source+Sans+3:wght@400;600;700&display=swap');
+# ============================================================
+# FARBEN
+# ============================================================
 
-    :root {
-        --bg: #EEF1EC;
-        --ink: #1C2430;
-        --muted: #5B6472;
-        --border: #DADFD6;
-        --white: #FFFFFF;
-        --red: #A6433D;
-        --red-bg: #F3DEDB;
-        --gold: #B8813A;
-        --gold-bg: #F1E3C9;
-        --teal: #2E6B60;
-        --teal-bg: #DCEAE6;
-    }
-
-    .stApp {
-        background: var(--bg);
-        color: var(--ink);
-    }
-
-    .block-container {
-        max-width: 1100px;
-        padding-top: 1.3rem;
-        padding-bottom: 3rem;
-    }
-
-    h1, h2, h3 {
-        font-family: "Libre Baskerville", Georgia, serif !important;
-        color: var(--ink) !important;
-    }
-
-    h1 {
-        font-size: 2.35rem !important;
-        margin-bottom: .1rem !important;
-    }
-
-    h2 {
-        font-size: 1.55rem !important;
-        margin-top: 1.7rem !important;
-    }
-
-    .subtitle, .mono {
-        font-family: "DM Mono", Consolas, monospace;
-        color: var(--muted);
-    }
-
-    .subtitle {
-        font-size: .82rem;
-        margin-bottom: 1rem;
-    }
-
-    /* Streamlit buttons */
-    div.stButton > button {
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        background: var(--white);
-        color: var(--ink);
-        min-height: 2.35rem;
-        padding: .25rem 1rem;
-        font-family: "DM Mono", Consolas, monospace;
-    }
-
-    div.stButton > button:hover {
-        border-color: #BFC7BC;
-        color: var(--ink);
-    }
-
-    /* Tabs */
-    button[data-baseweb="tab"] {
-        font-family: "Source Sans 3", sans-serif !important;
-        font-size: 1rem !important;
-        color: var(--muted) !important;
-        padding: .7rem 1rem !important;
-    }
-
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: white !important;
-        background: var(--ink) !important;
-        border-radius: 10px !important;
-    }
-
-    [data-baseweb="tab-list"] {
-        gap: 0 !important;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 5px;
-        background: rgba(255,255,255,.35);
-    }
-
-    /* Cards */
-    .card {
-        background: var(--white);
-        border: 1px solid var(--border);
-        border-radius: 15px;
-        margin: .45rem 0;
-        padding: .85rem 1rem;
-    }
-
-    .card-red { border-left: 5px solid var(--red); }
-    .card-gold { border-left: 5px solid var(--gold); }
-    .card-teal { border-left: 5px solid var(--teal); }
-
-    .card-title {
-        font-family: "Source Sans 3", sans-serif;
-        font-weight: 700;
-        font-size: 1.08rem;
-        color: var(--ink);
-    }
-
-    .card-meta {
-        font-family: "DM Mono", Consolas, monospace;
-        color: var(--muted);
-        font-size: .84rem;
-        margin-top: .12rem;
-    }
-
-    .badge {
-        display: inline-block;
-        border-radius: 999px;
-        padding: .25rem .65rem;
-        font-family: "DM Mono", Consolas, monospace;
-        font-size: .78rem;
-        white-space: nowrap;
-    }
-
-    .badge-red { background: var(--red-bg); color: var(--red); }
-    .badge-gold { background: var(--gold-bg); color: var(--gold); }
-    .badge-teal { background: var(--teal-bg); color: var(--teal); }
-
-    .today-row {
-        display: flex;
-        align-items: center;
-        gap: .65rem;
-        border-bottom: 1px solid #E1E4E0;
-        padding: .58rem .2rem;
-    }
-
-    .today-label {
-        flex: 1;
-        font-family: "Source Sans 3", sans-serif;
-        font-size: 1rem;
-    }
-
-    .today-time {
-        font-family: "DM Mono", Consolas, monospace;
-        font-size: .82rem;
-        color: var(--ink);
-        white-space: nowrap;
-    }
-
-    .color-study { color: var(--gold); }
-    .color-chore { color: var(--teal); }
-    .color-free { color: var(--muted); font-style: italic; }
-    .color-task { color: var(--gold); }
-
-    .calendar-cell {
-        min-height: 115px;
-        background: var(--white);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: .45rem;
-        margin: .15rem;
-    }
-
-    .calendar-cell.today {
-        background: var(--gold-bg);
-        border-color: var(--gold);
-    }
-
-    .calendar-cell.outside {
-        opacity: .42;
-    }
-
-    .day-number {
-        font-family: "Libre Baskerville", Georgia, serif;
-        font-size: .95rem;
-    }
-
-    .dots {
-        margin-top: 2.7rem;
-        display: flex;
-        gap: 5px;
-    }
-
-    .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        display: inline-block;
-    }
-
-    .dot-red { background: var(--red); }
-    .dot-gold { background: var(--gold); }
-    .dot-teal { background: var(--teal); }
-
-    .section-gap {
-        height: .25rem;
-    }
-
-    .error-box {
-        background: var(--red-bg);
-        border: 1px solid #E6C2BE;
-        color: var(--red);
-        padding: .8rem 1rem;
-        border-radius: 12px;
-    }
-
-    /* Streamlit-Oberflächen ausblenden */
-    [data-testid="stHeader"] {
-        display: none;
-    }
-
-    [data-testid="stToolbar"] {
-        display: none;
-    }
-
-    footer {
-        display: none;
-    }
-
-    #MainMenu {
-        display: none;
-    }
-
-    /* App beginnt ganz oben */
-    .block-container {
-        padding-top: 1.2rem !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Grundfarben für Planungstypen
+# Diese Farben werden in der MONATSANSICHT verwendet.
+COLOR_EXAM = (201, 76, 76)       # Prüfungen
+COLOR_TASK = (201, 162, 39)      # Aufträge
+COLOR_CHORE = (61, 139, 135)     # Ämtli
 
 
-# ----------------------------- Data -----------------------------
-
-WEEKDAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-MONTHS = [
-    "Januar", "Februar", "März", "April", "Mai", "Juni",
-    "Juli", "August", "September", "Oktober", "November", "Dezember",
-]
-
-SUBJECT_DIFFICULTY = {
-    "geschichte": 1,
-    "biologie": 2,
-    "geografie": 3,
-    "englisch": 4,
+# Farben für einzelne Fächer
+# Diese Farben werden in der WOCHENANSICHT und ÜBERSICHT verwendet.
+SUBJECT_COLORS = {
+    "Mathematik": (52, 152, 219),
+    "Deutsch": (155, 89, 182),
+    "Englisch": (46, 204, 113),
+    "Französisch": (241, 196, 15),
+    "Geschichte": (230, 126, 34),
+    "Geografie": (26, 188, 156),
+    "Physik": (231, 76, 60),
+    "Chemie": (52, 73, 94),
+    "Biologie": (39, 174, 96),
+    "Informatik": (127, 140, 141),
+    "Latein": (127, 0, 255),
 }
 
+
+# Fallback, falls ein Fach nicht in SUBJECT_COLORS vorhanden ist
+COLOR_SUBJECT_DEFAULT = (0, 255, 255)
+
+
+WEEKDAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+
+MONTH_NAMES = [
+    "Januar",
+    "Februar",
+    "März",
+    "April",
+    "Mai",
+    "Juni",
+    "Juli",
+    "August",
+    "September",
+    "Oktober",
+    "November",
+    "Dezember",
+]
+
 GAP_MINUTES = 10
-
-
-def iso(d):
-    return d.strftime("%Y-%m-%d")
-
-
-def parse_iso(s):
-    return datetime.strptime(s, "%Y-%m-%d").date()
-
-
-def format_day(s):
-    d = parse_iso(s)
-    return f"{WEEKDAYS[d.weekday()]}, {d.day:02d}.{d.month:02d}."
-
-
-def format_day_long(s):
-    d = parse_iso(s)
-    return f"{WEEKDAYS[d.weekday()]}, {d.day:02d}. {MONTHS[d.month - 1]} {d.year}"
-
-
-def days_until(s):
-    return (parse_iso(s) - date.today()).days
-
-
-def time_to_minutes(t):
-    h, m = map(int, t.split(":"))
-    return h * 60 + m
-
-
-def minutes_to_time(n):
-    return f"{int(n // 60):02d}:{int(n % 60):02d}"
-
-
-def add_minutes(t, mins):
-    return minutes_to_time(time_to_minutes(t) + int(mins))
-
-
-def urgency(days):
-    if days <= 3:
-        return "red"
-    if days <= 7:
-        return "gold"
-    return "teal"
-
-
-def get_work_hours(iso_date):
-    d = parse_iso(iso_date)
-    if d.weekday() in (0, 1):
-        return [("13:00", "20:00")]
-    if d.weekday() == 2:
-        return [("13:00", "14:00"), ("18:00", "20:00")]
-    if d.weekday() == 3:
-        return [("16:30", "20:00")]
-    if d.weekday() == 4:
-        return [("17:00", "20:00")]
-    if d.weekday() == 5:
-        return [("08:00", "20:00")]
-    return []
-
-
-def halfway_point(windows):
-    if not windows:
-        return None
-    total = sum(time_to_minutes(e) - time_to_minutes(s) for s, e in windows)
-    remaining = total / 2
-    for s, e in windows:
-        duration = time_to_minutes(e) - time_to_minutes(s)
-        if remaining <= duration:
-            return time_to_minutes(s) + remaining
-        remaining -= duration
-    return time_to_minutes(windows[-1][1])
-
-
-def get_session_dates(exam_date):
-    exam = parse_iso(exam_date)
-    result = []
-    offset = 1
-    while len(result) < 10 and offset < 60:
-        d = exam - timedelta(days=offset)
-        if d.weekday() != 6:
-            result.append(iso(d))
-        offset += 1
-    result.reverse()
-    return result
-
-
-def get_base_per_day(hours, day_count):
-    total = round(float(hours) * 60)
-    if not total:
-        return 0
-    divisor = max(day_count - 1, 1)
-    return min(round(total / divisor), 45)
-
-
-def get_study_plan(exam):
-    if not exam.get("date") or not exam.get("hours"):
-        return []
-    dates = get_session_dates(exam["date"])
-    base = get_base_per_day(exam["hours"], len(dates))
-    if not base:
-        return []
-
-    completed = exam.get("completed", [])
-    today_iso = iso(date.today())
-    past = [d for d in dates if d < today_iso]
-    future = [d for d in dates if d >= today_iso]
-
-    missed = sum(1 for d in past if d not in completed) * base
-    extra = round(missed / len(future)) if future else 0
-
-    result = []
-    for d in dates:
-        is_past = d < today_iso
-        result.append({
-            "date": d,
-            "minutes": base if is_past else min(base + extra, 45),
-            "isPast": is_past,
-            "isToday": d == today_iso,
-            "done": d in completed,
-        })
-    return result
-
-
-def get_task_session_dates(task):
-    due = parse_iso(task["due"])
-    result = []
-    offset = 1
-    # gleiche Grundidee wie die Desktop-Version: bis zu 10 Werktage vor Abgabe
-    while len(result) < 10 and offset < 60:
-        d = due - timedelta(days=offset)
-        if d.weekday() != 6:
-            result.append(iso(d))
-        offset += 1
-    result.reverse()
-    return result
-
-
-def get_task_plan(task):
-    total = round(float(task.get("hours", 0) or 0) * 60)
-    if not total or not task.get("due"):
-        return {"entries": [], "basePerDay": 0}
-
-    dates = get_task_session_dates(task)
-    if not dates:
-        return {"entries": [], "basePerDay": 0}
-
-    base = min(round(total / len(dates)), 45)
-    if not base:
-        return {"entries": [], "basePerDay": 0}
-
-    completed = task.get("completed", [])
-    today_iso = iso(date.today())
-    past = [d for d in dates if d < today_iso]
-    future = [d for d in dates if d >= today_iso]
-
-    missed = sum(1 for d in past if d not in completed) * base
-    extra = round(missed / len(future)) if future else 0
-
-    entries = []
-    for d in dates:
-        entries.append({
-            "date": d,
-            "minutes": base if d < today_iso else min(base + extra, 45),
-            "isPast": d < today_iso,
-            "isToday": d == today_iso,
-            "done": d in completed,
-        })
-    return {"entries": entries, "basePerDay": base}
-
-
-def is_chore_active_on_date(chore, iso_date):
-    if chore.get("frequency") == "einmalig":
-        return chore.get("date") == iso_date
-
-    d = parse_iso(iso_date)
-    if d.weekday() == 6:
-        return False
-
-    start = chore.get("startDate")
-    if not start or iso_date < start:
-        return False
-
-    interval = max(1, int(chore.get("interval", 1) or 1))
-    count = 0
-    cursor = parse_iso(start)
-
-    while iso(cursor) < iso_date:
-        if cursor.weekday() != 6:
-            count += 1
-        cursor += timedelta(days=1)
-
-    return count % interval == 0
-
-
-def get_day_items(iso_date, exams, tasks, chores):
-    d = parse_iso(iso_date)
-    is_sunday = d.weekday() == 6
-    chore_items = []
-
-    for c in chores:
-        if is_chore_active_on_date(c, iso_date):
-            minutes = int(c.get("duration", 30) or 30)
-            chore_items.append({
-                "type": "chore",
-                "id": c["id"],
-                "label": c["title"],
-                "start": c["time"],
-                "end": add_minutes(c["time"], minutes),
-                "minutes": minutes,
-                "done": iso_date in c.get("completed", []),
-                "date": iso_date,
-            })
-
-    if is_sunday:
-        return sorted(chore_items, key=lambda x: x["start"])
-
-    work_windows = get_work_hours(iso_date)
-
-    free_item = None
-    if d.weekday() != 3 and work_windows:
-        half = halfway_point(work_windows)
-        if half is not None:
-            start = minutes_to_time(round(half / 5) * 5)
-            free_item = {
-                "type": "freizeit",
-                "id": f"freizeit-{iso_date}",
-                "label": "Freizeit",
-                "start": start,
-                "end": add_minutes(start, 90),
-                "minutes": 90,
-                "date": iso_date,
-            }
-
-    obstacles = list(chore_items)
-    if free_item:
-        obstacles.append(free_item)
-
-    def free_slots(blocked, day_end="23:00"):
-        slots = [
-            {"start": time_to_minutes(s), "end": time_to_minutes(e)}
-            for s, e in work_windows
-        ]
-
-        last_end = time_to_minutes(work_windows[-1][1]) if work_windows else time_to_minutes("13:00")
-        day_end_min = time_to_minutes(day_end)
-        if day_end_min > last_end:
-            slots.append({"start": last_end, "end": day_end_min})
-
-        for o in blocked:
-            occ_start = time_to_minutes(o["start"]) - GAP_MINUTES
-            occ_end = time_to_minutes(o["end"]) + GAP_MINUTES
-            new_slots = []
-
-            for slot in slots:
-                if occ_end <= slot["start"] or occ_start >= slot["end"]:
-                    new_slots.append(slot)
-                    continue
-                if occ_start > slot["start"]:
-                    new_slots.append({"start": slot["start"], "end": occ_start})
-                if occ_end < slot["end"]:
-                    new_slots.append({"start": occ_end, "end": slot["end"]})
-            slots = new_slots
-
-        return sorted([s for s in slots if s["end"] > s["start"]], key=lambda x: x["start"])
-
-    def place_first_fit(slots, minutes):
-        for i, slot in enumerate(slots):
-            if slot["end"] - slot["start"] >= minutes:
-                start = slot["start"]
-                end = start + minutes
-                slots[i]["start"] = end
-                if slots[i]["start"] >= slots[i]["end"]:
-                    slots.pop(i)
-                return {"start": minutes_to_time(start), "end": minutes_to_time(end)}
-        return None
-
-    # Lernzeiten zuerst
-    study_slots = free_slots(obstacles)
-    study_candidates = []
-
-    for ex in exams:
-        for entry in get_study_plan(ex):
-            if entry["date"] == iso_date and entry["minutes"] > 0:
-                study_candidates.append({
-                    "type": "study",
-                    "id": ex["id"],
-                    "label": ex["subject"],
-                    "minutes": entry["minutes"],
-                    "done": entry["done"],
-                    "date": iso_date,
-                })
-
-    study_candidates.sort(key=lambda x: SUBJECT_DIFFICULTY.get(
-        x["label"].split(":")[0].strip().lower(), 99
-    ))
-
-    for item in study_candidates:
-        pos = place_first_fit(study_slots, item["minutes"])
-        if pos:
-            item.update(pos)
-
-    # Aufträge danach
-    task_candidates = []
-    for task in tasks:
-        for entry in get_task_plan(task)["entries"]:
-            if entry["date"] == iso_date and entry["minutes"] > 0:
-                task_candidates.append({
-                    "type": "task",
-                    "id": task["id"],
-                    "label": task["title"],
-                    "minutes": entry["minutes"],
-                    "done": entry["done"],
-                    "date": iso_date,
-                    "guaranteed": bool(task.get("guaranteed", False)),
-                })
-
-    for item in task_candidates:
-        pos = place_first_fit(study_slots, item["minutes"])
-        if pos:
-            item.update(pos)
-
-    result = chore_items + study_candidates + task_candidates
-    if free_item:
-        result.append(free_item)
-
-    return sorted(
-        [x for x in result if x.get("start")],
-        key=lambda x: time_to_minutes(x["start"])
+MAX_STUDY_DAYS = 10
+MAX_MINUTES_PER_DAY = 45
+
+
+# Arbeitszeiten je Wochentag
+# 0 = Montag ... 6 = Sonntag
+WORK_HOURS = {
+    0: [("13:00", "20:00")],                       # Montag
+    1: [("13:00", "20:00")],                       # Dienstag
+    2: [("13:00", "14:00"), ("18:00", "20:00")],   # Mittwoch
+    3: [("16:30", "20:00")],                       # Donnerstag
+    4: [("17:00", "20:00")],                       # Freitag
+    5: [("08:00", "20:00")],                       # Samstag
+    6: [],                                          # Sonntag
+}
+
+
+# ============================================================
+# HTML-RENDERING
+# ============================================================
+
+def render_html(html: str) -> None:
+    """
+    Rendert HTML über st.markdown, ohne dass Einrückungen als
+    Markdown-Codeblock interpretiert werden.
+
+    Jede Zeile wird getrimmt, bevor sie an st.markdown() geht.
+    Das ist sicher, weil HTML- und CSS-Syntax nicht von
+    führenden Leerzeichen abhängt.
+    """
+    cleaned = "\n".join(
+        line.strip()
+        for line in html.strip().splitlines()
+    )
+    st.markdown(cleaned, unsafe_allow_html=True)
+
+
+def render_section_title(title: str) -> None:
+    render_html(
+        f'<div class="section-title">{escape_html(title)}</div>'
     )
 
 
-@st.cache_data(ttl=60)
-def load_github_json():
-    token = st.secrets["GITHUB_TOKEN"]
-    repo = st.secrets["GITHUB_REPO"]
-    path = st.secrets.get("GITHUB_FILE", "daten.json")
-    branch = st.secrets.get("GITHUB_BRANCH", "main")
+def render_centered_heading(
+    text: str,
+    size: str = "1.3rem",
+) -> None:
+    render_html(
+        f'<div style="text-align:center;'
+        f'font-family:\'Libre Baskerville\',serif;'
+        f'font-size:{size};'
+        f'font-weight:700;'
+        f'color:var(--ink);'
+        f'padding-top:.35rem;">'
+        f'{escape_html(text)}</div>'
+    )
 
-    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+
+# ============================================================
+# FARB-HILFSFUNKTIONEN
+# ============================================================
+
+def rgb_to_css(color: tuple[int, int, int]) -> str:
+    """Wandelt ein RGB-Tupel in eine CSS-rgb()-Farbe um."""
+    return f"rgb({color[0]}, {color[1]}, {color[2]})"
+
+
+def get_subject_color(
+    text: str | None,
+) -> tuple[int, int, int]:
+    """
+    Sucht in einem beliebigen Text nach einem bekannten Fach.
+
+    Dadurch funktioniert es z. B. für:
+        Mathematik
+        Mathematik – Ableitungen
+        Prüfung Mathematik
+        Lernen: Mathematik – Ableitungen
+
+    Wenn kein Fach gefunden wird, wird die Fallback-Farbe verwendet.
+    """
+    text = str(text or "").strip()
+
+    for subject, color in SUBJECT_COLORS.items():
+        if subject.lower() in text.lower():
+            return color
+
+    return COLOR_SUBJECT_DEFAULT
+
+
+def get_exam_color(exam: dict) -> tuple[int, int, int]:
+    """
+    Prüfungen bekommen in Woche und Übersicht
+    die Farbe des Fachs.
+    """
+    return get_subject_color(
+        exam.get("subject")
+        or exam.get("title")
+    )
+
+
+def get_task_color(task: dict) -> tuple[int, int, int]:
+    """
+    Aufträge bekommen in Woche und Übersicht
+    die Farbe des Fachs.
+
+    Es wird zuerst nach einem separaten Fachfeld gesucht.
+    Falls keines vorhanden ist, wird der komplette Auftragstitel
+    nach einem bekannten Fach durchsucht.
+    """
+    text = " ".join(
+        str(value)
+        for value in [
+            task.get("subject"),
+            task.get("fach"),
+            task.get("title"),
+        ]
+        if value
+    )
+
+    return get_subject_color(text)
+
+
+# ============================================================
+# ITEM-KARTE
+# ============================================================
+
+def render_item_card(
+    title: str,
+    meta: str = "",
+    color: tuple[int, int, int] | None = None,
+) -> None:
+    """
+    Rendert eine Karte.
+
+    Wenn color gesetzt ist, erhält die Karte links
+    einen farbigen Balken.
+    """
+    meta_html = (
+        f'<div class="item-meta">{escape_html(meta)}</div>'
+        if meta
+        else ""
+    )
+
+    color_style = ""
+
+    if color:
+        color_style = (
+            f' style="border-left: 5px solid '
+            f'{rgb_to_css(color)};"'
+        )
+
+    render_html(
+        f'<div class="item-card"{color_style}>'
+        f'<div class="item-title">'
+        f'{escape_html(title)}'
+        f'</div>'
+        f'{meta_html}'
+        f'</div>'
+    )
+
+
+# ============================================================
+# CSS
+# ============================================================
+
+def inject_css() -> None:
+    render_html(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+
+        :root {
+            --bg: #EEF1EC;
+            --ink: #1C2430;
+            --muted: #5B6472;
+            --border: #DADFD6;
+            --white: #FFFFFF;
+
+            --red: #C94C4C;
+            --gold: #C9A227;
+            --teal: #3D8B87;
+
+            --red-bg: #F8EAEA;
+            --gold-bg: #FBF5DF;
+            --teal-bg: #E8F3F1;
+        }
+
+        html {
+            color-scheme: light !important;
+        }
+
+        body {
+            background: var(--bg) !important;
+            color: var(--ink) !important;
+        }
+
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] > .main {
+            background: var(--bg) !important;
+            color: var(--ink) !important;
+        }
+
+        html,
+        body,
+        [data-testid="stAppViewContainer"] {
+            background: var(--bg);
+        }
+
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"] {
+            display: none;
+        }
+
+        #MainMenu {
+            visibility: hidden;
+        }
+
+        footer {
+            visibility: hidden;
+        }
+
+        .block-container {
+            max-width: 1400px;
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+        }
+
+        h1,
+        h2,
+        h3 {
+            color: var(--ink);
+            font-family: "Libre Baskerville", serif;
+        }
+
+        .section-title {
+            color: var(--ink);
+            font-family: "Libre Baskerville", serif;
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-top: 1.2rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .item-card {
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .item-title {
+            color: var(--ink);
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .item-meta {
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-top: 0.15rem;
+        }
+        </style>
+        """
+    )
+
+
+# ============================================================
+# ALLGEMEINE HILFSFUNKTIONEN
+# ============================================================
+
+def parse_date(value) -> date | None:
+    """YYYY-MM-DD -> date"""
+    if not value:
+        return None
+
+    try:
+        return datetime.strptime(
+            str(value),
+            "%Y-%m-%d",
+        ).date()
+    except ValueError:
+        return None
+
+
+def iso(d: date) -> str:
+    return d.isoformat()
+
+
+def format_date(d: date | None) -> str:
+    return d.strftime("%d.%m.%Y") if d else ""
+
+
+def format_short_date(d: date | None) -> str:
+    return d.strftime("%d.%m.") if d else ""
+
+
+def parse_time(value: str):
+    return datetime.strptime(value, "%H:%M").time()
+
+
+def minutes_between(
+    start: datetime,
+    end: datetime,
+) -> int:
+    return int(
+        (end - start).total_seconds() / 60
+    )
+
+
+def get_exam_title(exam: dict) -> str:
+    """
+    Prüfungen tragen Fach + Thema im Feld
+    'subject' (nicht 'title').
+    """
+    return (
+        exam.get("subject")
+        or exam.get("title")
+        or "Prüfung"
+    )
+
+
+def get_exam_minutes(exam: dict) -> int:
+    """
+    Prüfungen geben die Lernzeit in 'hours' an.
+    'duration' (Minuten) wird nur als Fallback
+    für ältere Datensätze unterstützt.
+    """
+    if "hours" in exam:
+        return int(exam.get("hours", 0)) * 60
+
+    return int(exam.get("duration", 45))
+
+
+def get_task_title(task: dict) -> str:
+    return task.get("title") or "Auftrag"
+
+
+def get_task_minutes(task: dict) -> int:
+    """
+    Aufträge geben den Aufwand in 'hours' an.
+    'duration' (Minuten) wird nur als Fallback
+    für ältere Datensätze unterstützt.
+    """
+    if "hours" in task:
+        return int(task.get("hours", 0)) * 60
+
+    return int(task.get("duration", 45))
+
+
+def escape_html(value) -> str:
+    """Verhindert, dass Benutzerdaten HTML kaputt machen."""
+    if value is None:
+        return ""
+
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#039;")
+    )
+
+
+# ============================================================
+# GITHUB
+# ============================================================
+
+@st.cache_data(ttl=60)
+def load_data() -> dict:
+    """Lädt daten.json aus dem privaten GitHub-Repository."""
+    token = st.secrets.get("GITHUB_TOKEN")
+    repo = st.secrets.get("GITHUB_REPO")
+    file_path = st.secrets.get(
+        "GITHUB_FILE",
+        "daten.json",
+    )
+    branch = st.secrets.get(
+        "GITHUB_BRANCH",
+        "main",
+    )
+
+    if not token:
+        raise RuntimeError(
+            "GITHUB_TOKEN fehlt in den Streamlit-Secrets."
+        )
+
+    if not repo:
+        raise RuntimeError(
+            "GITHUB_REPO fehlt in den Streamlit-Secrets."
+        )
+
+    url = (
+        f"https://api.github.com/repos/"
+        f"{repo}/contents/{file_path}"
+    )
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.raw+json",
@@ -629,492 +498,1210 @@ def load_github_json():
         url,
         headers=headers,
         params={"ref": branch},
-        timeout=15,
+        timeout=20,
     )
+
     response.raise_for_status()
+
     return response.json()
 
 
-def prepare_data(data):
-    today_iso = iso(date.today())
+# ============================================================
+# DATEN BEREINIGEN
+# ============================================================
+
+def prepare_data(data: dict):
+    """
+    Entfernt vergangene Prüfungen und Aufträge.
+    Ämtli bleiben aktiv, solange ihr Zeitraum noch läuft.
+    """
+    today = date.today()
 
     exams = [
-        e for e in data.get("exams", [])
-        if e.get("date", "") >= today_iso
+        exam
+        for exam in data.get("exams", [])
+        if (
+            d := parse_date(exam.get("date"))
+        )
+        and d >= today
     ]
+
     tasks = [
-        t for t in data.get("tasks", [])
-        if t.get("due", "") >= today_iso
+        task
+        for task in data.get("tasks", [])
+        if (
+            d := parse_date(task.get("due"))
+        )
+        and d >= today
     ]
-    chores = [
-        c for c in data.get("chores", [])
-        if c.get("frequency") != "einmalig"
-        or (c.get("date") and c.get("date") >= today_iso)
-    ]
+
+    chores = []
+
+    for chore in data.get("chores", []):
+        start = parse_date(
+            chore.get("startDate")
+        )
+
+        if not start:
+            continue
+
+        end = parse_date(
+            chore.get("endDate")
+        )
+
+        if end and end < today:
+            continue
+
+        chores.append(chore)
 
     return exams, tasks, chores
 
 
-# ----------------------------- UI helpers -----------------------------
+# ============================================================
+# ÄMTLI
+# ============================================================
 
-def badge_text(days):
-    if days == 0:
-        return "heute"
-    if days == 1:
-        return "morgen"
-    return f"in {days} Tagen"
+def is_chore_active(
+    chore: dict,
+    d: date,
+) -> bool:
+    """Prüft, ob ein Ämtli an diesem Datum aktiv ist."""
+    start = parse_date(
+        chore.get("startDate")
+    )
+
+    if not start:
+        return False
+
+    end = parse_date(
+        chore.get("endDate")
+    )
+
+    if end and d > end:
+        return False
+
+    if d < start:
+        return False
+
+    if d.weekday() == 6:
+        # Sonntag = keine Ämtli
+        return False
+
+    # Unterstützt sowohl frequency: "recurring"
+    # als auch das ältere boolesche Feld "recurring".
+    is_recurring = (
+        chore.get("frequency") == "recurring"
+        or chore.get("recurring", False)
+    )
+
+    if not is_recurring:
+        return d == start
+
+    interval = int(
+        chore.get(
+            "interval",
+            chore.get("intervalDays", 1),
+        )
+    ) or 1
+
+    return (d - start).days % interval == 0
 
 
-def card_class(level):
-    return f"card-{level}"
+# ============================================================
+# LERN- UND AUFGABENPLAN
+# ============================================================
+
+def future_days_until(
+    end_date: date,
+    max_days: int = MAX_STUDY_DAYS,
+) -> list[date]:
+    """
+    Die nächsten maximal `max_days` Nicht-Sonntage
+    vor dem Enddatum.
+    """
+    today = date.today()
+    result = []
+    current = today
+
+    while (
+        current < end_date
+        and len(result) < max_days
+    ):
+        if current.weekday() != 6:
+            result.append(current)
+
+        current += timedelta(days=1)
+
+    return result
 
 
-def badge_class(level):
-    return f"badge-{level}"
+def distribute_minutes(
+    total_minutes: int,
+    days: list[date],
+    max_per_day: int = MAX_MINUTES_PER_DAY,
+) -> dict[date, int]:
+    """
+    Verteilt Lern-/Aufgabenzeit auf die verfügbaren Tage.
+    Es werden nur 15-Minuten-Einheiten verwendet.
+    """
+    if total_minutes <= 0 or not days:
+        return {}
+
+    total_minutes = (
+        total_minutes // 15
+    ) * 15
+
+    if total_minutes <= 0:
+        return {}
+
+    max_per_day = (
+        max_per_day // 15
+    ) * 15
+
+    result = {
+        d: 0
+        for d in days
+    }
+
+    remaining = total_minutes
+
+    while remaining >= 15:
+        changed = False
+
+        for d in days:
+            if remaining < 15:
+                break
+
+            if result[d] >= max_per_day:
+                continue
+
+            result[d] += 15
+            remaining -= 15
+            changed = True
+
+        if not changed:
+            break
+
+    return result
 
 
-def render_exam_card(ex):
-    d = days_until(ex["date"])
-    level = urgency(d)
-    st.markdown(
-        f"""
-        <div class="card {card_class(level)}">
-            <div style="display:flex;justify-content:space-between;gap:1rem;align-items:center;">
-                <div>
-                    <div class="card-title">{ex["subject"]}</div>
-                    <div class="card-meta">{format_day(ex["date"])} · {ex["hours"]} h Lernzeit</div>
-                </div>
-                <span class="badge {badge_class(level)}">{badge_text(d)}</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def build_study_plan(
+    exam: dict,
+) -> dict[date, int]:
+    """Erstellt einmalig den Lernplan für eine Prüfung."""
+    exam_date = parse_date(
+        exam.get("date")
+    )
+
+    if not exam_date:
+        return {}
+
+    total_minutes = get_exam_minutes(exam)
+
+    days = future_days_until(
+        exam_date,
+        max_days=MAX_STUDY_DAYS,
+    )
+
+    return distribute_minutes(
+        total_minutes,
+        days,
     )
 
 
-def render_task_card(task):
-    d = days_until(task["due"])
-    plan = get_task_plan(task)
-    fully_done = len(task.get("completed", [])) > 0 and not plan["entries"]
-    level = "teal" if fully_done else urgency(min(d, 5))
-    badge = "✓ erledigt" if fully_done else badge_text(d)
+def build_task_plan(
+    task: dict,
+) -> dict[date, int]:
+    """Erstellt einmalig den Arbeitsplan für einen Auftrag."""
+    due_date = parse_date(
+        task.get("due")
+    )
 
-    st.markdown(
-        f"""
-        <div class="card {card_class(level)}">
-            <div style="display:flex;justify-content:space-between;gap:1rem;align-items:center;">
-                <div>
-                    <div class="card-title">{task["title"]}</div>
-                    <div class="card-meta">{format_day(task["due"])}, {task.get("time","23:59")} · {task["hours"]} h Aufwand</div>
-                </div>
-                <span class="badge {badge_class(level)}">{badge}</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    if not due_date:
+        return {}
+
+    total_minutes = get_task_minutes(task)
+
+    days = future_days_until(
+        due_date,
+        max_days=MAX_STUDY_DAYS,
+    )
+
+    return distribute_minutes(
+        total_minutes,
+        days,
     )
 
 
-def render_today_item(item, index):
-    typ = item["type"]
-    if typ == "study":
-        label = item["label"]
-        cls = "color-study"
-    elif typ == "chore":
-        label = f"Aufgabe: {item['label']}"
-        cls = "color-chore"
-    elif typ == "freizeit":
-        label = "Freizeit"
-        cls = "color-free"
-    else:
-        label = f"Auftrag: {item['label']}"
-        if not item.get("guaranteed"):
-            label += " (freiwillig)"
-        cls = "color-task"
+def build_all_plans(
+    exams: list[dict],
+    tasks: list[dict],
+):
+    """
+    Berechnet sämtliche Lern- und Aufgabenpläne genau einmal.
+    Die Elemente werden per Index referenziert.
+    """
+    study_plans = {
+        i: build_study_plan(exam)
+        for i, exam in enumerate(exams)
+    }
 
-    done = item.get("done", False)
-    can_check = typ in ("study", "chore") or (typ == "task" and item.get("guaranteed"))
+    task_plans = {
+        i: build_task_plan(task)
+        for i, task in enumerate(tasks)
+    }
 
-    cols = st.columns([0.04, 0.72, 0.24])
-    with cols[0]:
-        if can_check:
-            st.checkbox("", value=done, key=f"today_{item['id']}_{item['date']}", label_visibility="collapsed")
-    with cols[1]:
-        st.markdown(f'<div class="today-label {cls}">{label}</div>', unsafe_allow_html=True)
-    with cols[2]:
-        st.markdown(
-            f'<div class="today-time">{item["start"]}–{item["end"]} · {item["minutes"]} Min</div>',
-            unsafe_allow_html=True,
+    return study_plans, task_plans
+
+
+# ============================================================
+# ZEITSLOTS
+# ============================================================
+
+def get_work_slots(
+    d: date,
+) -> list[tuple[datetime, datetime]]:
+    """Gibt die verfügbaren Arbeitszeiten des Tages zurück."""
+    result = []
+
+    for start_text, end_text in WORK_HOURS.get(
+        d.weekday(),
+        [],
+    ):
+        start = datetime.combine(
+            d,
+            parse_time(start_text),
         )
 
-
-# ----------------------------- Header -----------------------------
-
-try:
-    data = load_github_json()
-    exams, tasks, chores = prepare_data(data)
-except KeyError as exc:
-    st.markdown(
-        '<div class="error-box">Secret fehlt: '
-        f'<code>{exc.args[0]}</code></div>',
-        unsafe_allow_html=True,
-    )
-    st.stop()
-except requests.HTTPError as exc:
-    st.markdown(
-        f'<div class="error-box">GitHub konnte die daten.json nicht laden: '
-        f'{exc.response.status_code} {exc.response.reason}</div>',
-        unsafe_allow_html=True,
-    )
-    st.stop()
-except Exception as exc:
-    st.markdown(
-        f'<div class="error-box">Fehler beim Laden der Daten: {exc}</div>',
-        unsafe_allow_html=True,
-    )
-    st.stop()
-
-st.title("Semesterplaner")
-st.markdown(
-    f'<div class="subtitle">{len(exams)} Prüfungen&nbsp;&nbsp;·&nbsp;&nbsp;'
-    f'{len(tasks)} Aufträge&nbsp;&nbsp;·&nbsp;&nbsp;{len(chores)} Aufgaben</div>',
-    unsafe_allow_html=True,
-)
-
-if st.button("↻ Daten neu laden"):
-    load_github_json.clear()
-    st.rerun()
-
-tab_overview, tab_week, tab_month = st.tabs(["Übersicht", "Woche", "Monat"])
-
-
-# ============================= Übersicht =============================
-
-with tab_overview:
-    st.subheader("Heute")
-
-    today_iso = iso(date.today())
-    items = get_day_items(today_iso, exams, tasks, chores)
-
-    left, right = st.columns([1, 1])
-    with left:
-        hide_times = st.toggle("Zeiten ausblenden", value=False)
-    with right:
-        hide_voluntary = st.toggle("Freiwillige Aufträge ausblenden", value=False)
-
-    filtered = [
-        x for x in items
-        if not (
-            hide_voluntary
-            and x["type"] == "task"
-            and not x.get("guaranteed")
+        end = datetime.combine(
+            d,
+            parse_time(end_text),
         )
+
+        result.append(
+            (start, end)
+        )
+
+    return result
+
+
+def find_free_slot(
+    d: date,
+    busy: list[tuple[datetime, datetime]],
+    duration: int,
+):
+    """
+    Sucht einen freien Zeitraum.
+    Der GAP_MINUTES-Puffer wird nur zwischen
+    bereits geplanten Aktivitäten berücksichtigt.
+    """
+    for slot_start, slot_end in get_work_slots(d):
+        current = slot_start
+
+        overlapping = sorted(
+            (
+                start,
+                end
+            )
+            for start, end in busy
+            if (
+                end > slot_start
+                and start < slot_end
+            )
+        )
+
+        for busy_start, busy_end in overlapping:
+            if busy_start > current:
+                available = minutes_between(
+                    current,
+                    busy_start,
+                )
+
+                if available >= duration:
+                    return (
+                        current,
+                        current + timedelta(
+                            minutes=duration
+                        ),
+                    )
+
+            # Erst nach einem bestehenden Block
+            # kommt die definierte Pause.
+            current = max(
+                current,
+                busy_end
+                + timedelta(
+                    minutes=GAP_MINUTES
+                ),
+            )
+
+        if (
+            current < slot_end
+            and minutes_between(
+                current,
+                slot_end,
+            ) >= duration
+        ):
+            return (
+                current,
+                current + timedelta(
+                    minutes=duration
+                ),
+            )
+
+    return None
+
+
+# ============================================================
+# TAGESPLAN
+# ============================================================
+
+def get_day_items(
+    d: date,
+    exams: list[dict],
+    tasks: list[dict],
+    chores: list[dict],
+    study_plans: dict,
+    task_plans: dict,
+) -> list[dict]:
+    """
+    Baut die Anzeige für einen Tag.
+    Es wird nichts neu berechnet -
+    die Lern- und Aufgabenpläne kommen aus
+    study_plans/task_plans.
+    """
+    items: list[dict] = []
+    busy: list[tuple[datetime, datetime]] = []
+
+    # --------------------------------------------------------
+    # Sonntag: nur Ämtli, keine Zeitslots
+    # --------------------------------------------------------
+
+    if d.weekday() == 6:
+        for chore in chores:
+            if is_chore_active(chore, d):
+                items.append({
+                    "title": chore.get(
+                        "title",
+                        "Ämtli",
+                    ),
+                    "start": None,
+                    "end": None,
+                    "type": "chore",
+                    "color": COLOR_CHORE,
+                })
+
+        return items
+
+    # --------------------------------------------------------
+    # Ämtli
+    # --------------------------------------------------------
+
+    for chore in chores:
+        if not is_chore_active(chore, d):
+            continue
+
+        duration = int(
+            chore.get("duration", 30)
+        )
+
+        slot = find_free_slot(
+            d,
+            busy,
+            duration,
+        )
+
+        if not slot:
+            continue
+
+        start, end = slot
+
+        items.append({
+            "title": chore.get(
+                "title",
+                "Ämtli",
+            ),
+            "start": start,
+            "end": end,
+            "type": "chore",
+            "color": COLOR_CHORE,
+        })
+
+        busy.append(
+            (start, end)
+        )
+
+    # --------------------------------------------------------
+    # Freizeit (nicht Donnerstag)
+    # --------------------------------------------------------
+
+    if d.weekday() != 3:
+        work_slots = get_work_slots(d)
+
+        if work_slots:
+            first_start = work_slots[0][0]
+            last_end = work_slots[-1][1]
+
+            midpoint = (
+                first_start
+                + (last_end - first_start) / 2
+            )
+
+            leisure_start = (
+                midpoint
+                - timedelta(minutes=45)
+            )
+
+            leisure_end = (
+                midpoint
+                + timedelta(minutes=45)
+            )
+
+            if (
+                leisure_start >= first_start
+                and leisure_end <= last_end
+            ):
+                slot_is_free = not any(
+                    not (
+                        leisure_end <= busy_start
+                        or leisure_start >= busy_end
+                    )
+                    for busy_start, busy_end in busy
+                )
+
+                if slot_is_free:
+                    items.append({
+                        "title": "Freizeit",
+                        "start": leisure_start,
+                        "end": leisure_end,
+                        "type": "leisure",
+                        "color": None,
+                    })
+
+                    busy.append(
+                        (
+                            leisure_start,
+                            leisure_end,
+                        )
+                    )
+
+    # --------------------------------------------------------
+    # Lernen
+    # --------------------------------------------------------
+
+    for index, exam in enumerate(exams):
+        duration = (
+            study_plans
+            .get(index, {})
+            .get(d, 0)
+        )
+
+        if duration <= 0:
+            continue
+
+        slot = find_free_slot(
+            d,
+            busy,
+            duration,
+        )
+
+        if not slot:
+            continue
+
+        start, end = slot
+
+        title = (
+            "Lernen: "
+            + get_exam_title(exam)
+        )
+
+        items.append({
+            "title": title,
+            "start": start,
+            "end": end,
+            "type": "study",
+
+            # Woche/Übersicht:
+            # Farbe des Prüfungsfachs
+            "color": get_exam_color(exam),
+        })
+
+        busy.append(
+            (start, end)
+        )
+
+    # --------------------------------------------------------
+    # Aufträge
+    # --------------------------------------------------------
+
+    for index, task in enumerate(tasks):
+        duration = (
+            task_plans
+            .get(index, {})
+            .get(d, 0)
+        )
+
+        if duration <= 0:
+            continue
+
+        slot = find_free_slot(
+            d,
+            busy,
+            duration,
+        )
+
+        if not slot:
+            continue
+
+        start, end = slot
+
+        items.append({
+            "title": get_task_title(task),
+            "start": start,
+            "end": end,
+            "type": "task",
+
+            # Woche/Übersicht:
+            # Farbe des Auftragsfachs
+            "color": get_task_color(task),
+        })
+
+        busy.append(
+            (start, end)
+        )
+
+    items.sort(
+        key=lambda item: (
+            item["start"] is None,
+            item["start"] or datetime.max,
+        )
+    )
+
+    return items
+
+
+def format_time_range(
+    item: dict,
+) -> str:
+    start = item["start"]
+    end = item["end"]
+
+    return (
+        f"{start.strftime('%H:%M')} – "
+        f"{end.strftime('%H:%M')}"
+        if start and end
+        else ""
+    )
+
+
+# ============================================================
+# ÜBERSICHT
+# ============================================================
+
+def render_overview(
+    exams,
+    tasks,
+    chores,
+    study_plans,
+    task_plans,
+) -> None:
+    today = date.today()
+
+    # --------------------------------------------------------
+    # Heute
+    # --------------------------------------------------------
+
+    render_section_title("Heute")
+
+    today_items = get_day_items(
+        today,
+        exams,
+        tasks,
+        chores,
+        study_plans,
+        task_plans,
+    )
+
+    if not today_items:
+        st.info(
+            "Für heute ist nichts geplant."
+        )
+
+    for index, item in enumerate(today_items):
+        col1, col2 = st.columns(
+            [0.05, 0.95]
+        )
+
+        with col1:
+            st.checkbox(
+                "",
+                key=f"today_done_{index}",
+            )
+
+        with col2:
+            render_item_card(
+                item["title"],
+                format_time_range(item),
+                item.get("color"),
+            )
+
+    # --------------------------------------------------------
+    # Prüfungen
+    # --------------------------------------------------------
+
+    render_section_title("Prüfungen")
+
+    if not exams:
+        st.info(
+            "Keine kommenden Prüfungen."
+        )
+
+    for exam in exams:
+        d = parse_date(
+            exam.get("date")
+        )
+
+        render_item_card(
+            get_exam_title(exam),
+            format_date(d),
+
+            # Übersicht:
+            # Farbe des Prüfungsfachs
+            get_exam_color(exam),
+        )
+
+    # --------------------------------------------------------
+    # Aufträge
+    # --------------------------------------------------------
+
+    render_section_title("Aufträge")
+
+    if not tasks:
+        st.info(
+            "Keine offenen Aufträge."
+        )
+
+    for task in tasks:
+        d = parse_date(
+            task.get("due")
+        )
+
+        render_item_card(
+            get_task_title(task),
+            f"Fällig: {format_date(d)}",
+
+            # Übersicht:
+            # Farbe des Auftragsfachs
+            get_task_color(task),
+        )
+
+    # --------------------------------------------------------
+    # Ämtli
+    # --------------------------------------------------------
+
+    render_section_title("Ämtli")
+
+    active_chores = [
+        c
+        for c in chores
+        if is_chore_active(c, today)
     ]
 
-    if not filtered:
-        st.markdown('<div class="card"><span class="mono">Keine Einträge für heute.</span></div>', unsafe_allow_html=True)
-    else:
-        for i, item in enumerate(filtered):
-            if hide_times:
-                # gleicher Aufbau, nur die rechte Zeitangabe fehlt
-                typ = item["type"]
-                if typ == "study":
-                    label = item["label"]
-                    cls = "color-study"
-                elif typ == "chore":
-                    label = f"Aufgabe: {item['label']}"
-                    cls = "color-chore"
-                elif typ == "freizeit":
-                    label = "Freizeit"
-                    cls = "color-free"
-                else:
-                    label = f"Auftrag: {item['label']}"
-                    cls = "color-task"
-                st.markdown(f'<div class="today-row"><div class="today-label {cls}">{label}</div></div>', unsafe_allow_html=True)
-            else:
-                render_today_item(item, i)
-
-    st.subheader("Alle Prüfungen")
-    show_all_exams = st.button(
-        "← Nächste 7 Prüfungen anzeigen" if len(exams) > 7 else "Alle Prüfungen",
-        key="show_exams",
-    )
-    visible_exams = sorted(exams, key=lambda x: x["date"])
-    if not show_all_exams:
-        visible_exams = visible_exams[:7]
-
-    for ex in visible_exams:
-        render_exam_card(ex)
-
-    st.subheader("Aufträge")
-    c1, c2 = st.columns([0.34, 0.66])
-    with c1:
-        current_only = st.toggle("Nur aktuelle Aufträge anzeigen", value=True)
-    with c2:
-        subject_filter = st.text_input("Fach eingeben ...", label_visibility="collapsed", placeholder="Fach eingeben ...")
-
-    visible_tasks = sorted(tasks, key=lambda x: x["due"] + x.get("time", "23:59"))
-
-    if current_only:
-        current = []
-        for task in visible_tasks:
-            entries = get_task_plan(task)["entries"]
-            if entries and entries[0]["date"] <= today_iso:
-                current.append(task)
-        visible_tasks = current
-
-    if subject_filter.strip():
-        q = subject_filter.strip().lower()
-        visible_tasks = [
-            t for t in visible_tasks
-            if q in t.get("title", "").lower()
-            or q in t.get("subject", "").lower()
-        ]
-
-    for task in visible_tasks:
-        render_task_card(task)
-
-    st.subheader("Aufgaben")
-    for chore in chores:
-        freq = (
-            f"alle {chore.get('interval', 1)} Tage (ausser So)"
-            if chore.get("frequency") != "einmalig"
-            else "einmalig"
+    if not active_chores:
+        st.info(
+            "Heute keine Ämtli."
         )
-        st.markdown(
-            f"""
-            <div style="padding:.7rem .25rem;border-bottom:1px solid #DADFD6;">
-                <div style="display:flex;justify-content:space-between;">
-                    <div>
-                        <div style="font-family:'Source Sans 3';font-size:1rem;">{chore["title"]}</div>
-                        <div class="card-meta">{freq} · {chore["time"]} · {chore.get("duration",30)} Min</div>
-                    </div>
-                    <div class="mono">Bearbeiten&nbsp;&nbsp;×</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+
+    for chore in active_chores:
+        render_item_card(
+            chore.get(
+                "title",
+                "Ämtli",
+            ),
+            color=COLOR_CHORE,
         )
 
 
-# =============================== Woche ===============================
+# ============================================================
+# WOCHENANSICHT
+# ============================================================
 
-with tab_week:
+def render_week(
+    exams,
+    tasks,
+    chores,
+    study_plans,
+    task_plans,
+) -> None:
     if "week_offset" not in st.session_state:
         st.session_state.week_offset = 0
 
-    c1, c2, c3 = st.columns([1, 5, 1])
-    with c1:
-        if st.button("‹", key="week_prev"):
+    col1, col2, col3 = st.columns(
+        [1, 2, 1]
+    )
+
+    with col1:
+        if st.button(
+            "← Vorherige Woche",
+            key="previous_week",
+        ):
             st.session_state.week_offset -= 1
             st.rerun()
-    with c3:
-        if st.button("›", key="week_next"):
+
+    with col2:
+        render_centered_heading(
+            "Wochenansicht"
+        )
+
+    with col3:
+        if st.button(
+            "Nächste Woche →",
+            key="next_week",
+        ):
             st.session_state.week_offset += 1
             st.rerun()
 
-    monday = date.today() - timedelta(days=date.today().weekday())
-    monday += timedelta(weeks=st.session_state.week_offset)
-    week_dates = [monday + timedelta(days=i) for i in range(7)]
+    if st.button(
+        "Heute",
+        key="today_week",
+    ):
+        st.session_state.week_offset = 0
+        st.rerun()
 
-    with c2:
-        st.markdown(
-            f"<h3 style='text-align:center;margin-top:.2rem;'>"
-            f"{week_dates[0].day:02d}. {MONTHS[week_dates[0].month-1]} – "
-            f"{week_dates[-1].day:02d}. {MONTHS[week_dates[-1].month-1]} "
-            f"{week_dates[-1].year}</h3>",
-            unsafe_allow_html=True,
+    today = date.today()
+
+    monday = (
+        today
+        - timedelta(days=today.weekday())
+        + timedelta(
+            weeks=st.session_state.week_offset
+        )
+    )
+
+    columns = st.columns(7)
+
+    for index in range(7):
+        d = monday + timedelta(
+            days=index
         )
 
-    for d in week_dates:
-        s = iso(d)
-        row_bg = "#F1E3C9" if d == date.today() else "#FFFFFF"
-        st.markdown(
-            f"""
-            <div class="card" style="background:{row_bg};">
-                <div style="display:flex;gap:1rem;">
-                    <div style="min-width:82px;">
-                        <div class="mono">{WEEKDAYS[d.weekday()]}</div>
-                        <div style="font-family:'Libre Baskerville';font-weight:700;font-size:1.1rem;">
-                            {d.day}.{d.month}.
-                        </div>
-                    </div>
-                    <div style="flex:1;">
-            """,
-            unsafe_allow_html=True,
-        )
-
-        day_exams = [e for e in exams if e.get("date") == s]
-        day_tasks = [t for t in tasks if t.get("due") == s]
-        day_items = get_day_items(s, exams, tasks, chores)
-
-        for ex in day_exams:
+        with columns[index]:
             st.markdown(
-                f'<div class="color-study"><b>Prüfung: {ex["subject"]}</b></div>',
-                unsafe_allow_html=True,
-            )
-        for task in day_tasks:
-            st.markdown(
-                f'<div class="color-chore"><b>Abgabe: {task["title"]} ({task.get("time","23:59")})</b></div>',
-                unsafe_allow_html=True,
-            )
-        for item in day_items:
-            if item["type"] == "study":
-                label = f"Lernzeit {item['label']}"
-                cls = "color-study"
-            elif item["type"] == "chore":
-                label = f"Aufgabe „{item['label']}“"
-                cls = "color-chore"
-            elif item["type"] == "freizeit":
-                label = "Freizeit"
-                cls = "color-free"
-            else:
-                suffix = "" if item.get("guaranteed") else " (freiwillig)"
-                label = f"Auftrag „{item['label']}“{suffix}"
-                cls = "color-task"
-
-            st.markdown(
-                f'<div class="{cls} mono" style="margin:.1rem 0;">'
-                f'{label}: {item["start"]}–{item["end"]}</div>',
-                unsafe_allow_html=True,
+                f"**{WEEKDAYS[index]}**  \n"
+                f"`{format_short_date(d)}`"
             )
 
-        if not day_exams and not day_tasks and not day_items:
-            st.markdown('<span class="mono" style="color:#B0B5B0;">–</span>', unsafe_allow_html=True)
+            items = get_day_items(
+                d,
+                exams,
+                tasks,
+                chores,
+                study_plans,
+                task_plans,
+            )
 
-        st.markdown("</div></div></div>", unsafe_allow_html=True)
+            if not items:
+                st.caption("—")
+
+            for item in items:
+                render_item_card(
+                    item["title"],
+                    format_time_range(item),
+
+                    # Woche:
+                    # Fachfarbe oder Ämtli-Farbe
+                    item.get("color"),
+                )
 
 
-# =============================== Monat ===============================
+# ============================================================
+# MONATSKALENDER
+# ============================================================
 
-with tab_month:
+def render_month(
+    exams,
+    tasks,
+    chores,
+) -> None:
     if "month_offset" not in st.session_state:
         st.session_state.month_offset = 0
-    if "selected_day" not in st.session_state:
-        st.session_state.selected_day = iso(date.today())
 
-    c1, c2, c3 = st.columns([1, 5, 1])
-    with c1:
-        if st.button("‹", key="month_prev"):
+    today = date.today()
+
+    month_index = (
+        today.year * 12
+        + today.month
+        - 1
+        + st.session_state.month_offset
+    )
+
+    year = month_index // 12
+    month = month_index % 12 + 1
+
+    # --------------------------------------------------------
+    # Navigation
+    # --------------------------------------------------------
+
+    col1, col2, col3 = st.columns(
+        [1, 2, 1]
+    )
+
+    with col1:
+        if st.button(
+            "← Vorheriger Monat",
+            key="previous_month",
+        ):
             st.session_state.month_offset -= 1
             st.rerun()
-    with c3:
-        if st.button("›", key="month_next"):
+
+    with col2:
+        render_centered_heading(
+            f"{MONTH_NAMES[month - 1]} {year}",
+            size="1.35rem",
+        )
+
+    with col3:
+        if st.button(
+            "Nächster Monat →",
+            key="next_month",
+        ):
             st.session_state.month_offset += 1
             st.rerun()
 
-    base = date(date.today().year, date.today().month, 1)
-    raw_month = base.month - 1 + st.session_state.month_offset
-    year = base.year + raw_month // 12
-    month = raw_month % 12 + 1
-    month_first = date(year, month, 1)
+    if st.button(
+        "Heute",
+        key="today_month",
+    ):
+        st.session_state.month_offset = 0
+        st.rerun()
 
-    with c2:
-        st.markdown(
-            f"<h3 style='text-align:center;margin-top:.2rem;'>"
-            f"{MONTHS[month-1]} {year}</h3>",
-            unsafe_allow_html=True,
+    # --------------------------------------------------------
+    # Kalenderdaten
+    # --------------------------------------------------------
+
+    weeks = (
+        calendar.Calendar(
+            firstweekday=0
+        ).monthdatescalendar(
+            year,
+            month,
+        )
+    )
+
+    # --------------------------------------------------------
+    # HTML
+    #
+    # In der Monatsansicht zeigen die Punkte NUR:
+    # - Prüfung
+    # - Auftrag
+    # - Ämtli
+    #
+    # Die Fachfarben werden hier bewusst NICHT verwendet.
+    # --------------------------------------------------------
+
+    style = """
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+        padding: 0;
+        background: #EEF1EC;
+        font-family: Arial, sans-serif;
+    }
+
+    .calendar {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 5px;
+        width: 100%;
+    }
+
+    .weekday {
+        text-align: center;
+        color: #5B6472;
+        font-family: monospace;
+        font-size: 13px;
+        font-weight: 500;
+        padding: 7px 4px;
+    }
+
+    .calendar-cell {
+        min-height: 115px;
+        background: #FFFFFF;
+        border: 1px solid #DADFD6;
+        border-radius: 10px;
+        padding: 10px;
+        position: relative;
+    }
+
+    .calendar-cell.today {
+        background: #FBF5DF;
+        border: 2px solid #C9A227;
+    }
+
+    .calendar-cell.outside {
+        background: #F4F5F2;
+        opacity: 0.45;
+    }
+
+    .day-number {
+        color: #1C2430;
+        font-family: monospace;
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    .dots {
+        position: absolute;
+        left: 10px;
+        bottom: 10px;
+        display: flex;
+        gap: 6px;
+    }
+
+    .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+    }
+
+    /* Prüfung */
+    .dot-red {
+        background: #C94C4C;
+    }
+
+    /* Auftrag */
+    .dot-gold {
+        background: #C9A227;
+    }
+
+    /* Ämtli */
+    .dot-teal {
+        background: #3D8B87;
+    }
+    """
+
+    cells = "".join(
+        f'<div class="weekday">{wd}</div>'
+        for wd in WEEKDAYS
+    )
+
+    for week in weeks:
+        for d in week:
+            current_date = iso(d)
+
+            classes = [
+                "calendar-cell"
+            ]
+
+            if d.month != month:
+                classes.append(
+                    "outside"
+                )
+
+            if d == today:
+                classes.append(
+                    "today"
+                )
+
+            dots = ""
+
+            # ------------------------------------------------
+            # MONAT:
+            # Prüfung = rot
+            # ------------------------------------------------
+
+            if any(
+                exam.get("date")
+                == current_date
+                for exam in exams
+            ):
+                dots += (
+                    '<span class="dot '
+                    'dot-red"></span>'
+                )
+
+            # ------------------------------------------------
+            # MONAT:
+            # Auftrag = gelb
+            # ------------------------------------------------
+
+            if any(
+                task.get("due")
+                == current_date
+                for task in tasks
+            ):
+                dots += (
+                    '<span class="dot '
+                    'dot-gold"></span>'
+                )
+
+            # ------------------------------------------------
+            # MONAT:
+            # Ämtli = türkis
+            # ------------------------------------------------
+
+            if any(
+                is_chore_active(chore, d)
+                for chore in chores
+            ):
+                dots += (
+                    '<span class="dot '
+                    'dot-teal"></span>'
+                )
+
+            cells += (
+                f'<div class="{" ".join(classes)}">'
+                f'<div class="day-number">'
+                f'{d.day}'
+                f'</div>'
+                f'<div class="dots">'
+                f'{dots}'
+                f'</div>'
+                f'</div>'
+            )
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>{style}</style>
+    </head>
+
+    <body>
+        <div class="calendar">
+            {cells}
+        </div>
+    </body>
+    </html>
+    """
+
+    components.html(
+        html,
+        height=(len(weeks) + 1) * 120 + 20,
+        scrolling=False,
+    )
+
+
+# ============================================================
+# HAUPTPROGRAMM
+# ============================================================
+
+def main() -> None:
+    inject_css()
+
+    st.title("Semesterplaner")
+
+    # --------------------------------------------------------
+    # Daten laden
+    # --------------------------------------------------------
+
+    try:
+        data = load_data()
+
+    except Exception as error:
+        st.error(
+            "Die Daten konnten nicht von GitHub geladen werden."
         )
 
-    if st.session_state.month_offset != 0:
-        if st.button("Heute", key="month_today"):
-            st.session_state.month_offset = 0
+        st.code(str(error))
+        st.stop()
+
+    exams, tasks, chores = prepare_data(data)
+
+    study_plans, task_plans = build_all_plans(
+        exams,
+        tasks,
+    )
+
+    # --------------------------------------------------------
+    # Kopfbereich
+    # --------------------------------------------------------
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Prüfungen",
+            len(exams),
+        )
+
+    with col2:
+        st.metric(
+            "Aufträge",
+            len(tasks),
+        )
+
+    with col3:
+        st.metric(
+            "Ämtli",
+            len(chores),
+        )
+
+    with col4:
+        if st.button(
+            "↻ Aktualisieren",
+            key="reload",
+        ):
+            load_data.clear()
             st.rerun()
 
-    # Kalender: CSS Grid statt Streamlit columns, damit es optisch nahe am Screenshot bleibt.
-    cal = calendar.Calendar(firstweekday=0)
-    weeks = cal.monthdatescalendar(year, month)
+    # --------------------------------------------------------
+    # Tabs
+    # --------------------------------------------------------
 
-    header = "".join(
-        f'<div style="text-align:center;font-family:DM Mono;color:#5B6472;">{w}</div>'
-        for w in WEEKDAYS
+    tab_overview, tab_week, tab_month = st.tabs(
+        [
+            "Übersicht",
+            "Woche",
+            "Monat",
+        ]
     )
 
-    cells = []
-    for d in [d for week in weeks for d in week]:
-        s = iso(d)
-        outside = d.month != month
-        today_cls = " today" if d == date.today() else ""
-        outside_cls = " outside" if outside else ""
+    # --------------------------------------------------------
+    # Übersicht
+    # --------------------------------------------------------
 
-        dots = []
-        if any(e.get("date") == s for e in exams):
-            dots.append('<span class="dot dot-red"></span>')
-        if any(t.get("due") == s for t in tasks):
-            dots.append('<span class="dot dot-gold"></span>')
-        if any(
-            is_chore_active_on_date(c, s) or
-            any(x["date"] == s for x in get_day_items(s, exams, tasks, chores))
-            for c in chores
-        ):
-            dots.append('<span class="dot dot-teal"></span>')
-
-        cells.append(
-            f"""
-            <div class="calendar-cell{today_cls}{outside_cls}">
-                <div class="day-number">{d.day}</div>
-                <div class="dots">{''.join(dots)}</div>
-            </div>
-            """
+    with tab_overview:
+        render_overview(
+            exams,
+            tasks,
+            chores,
+            study_plans,
+            task_plans,
         )
 
-    st.markdown(
-        f"""
-        <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;">
-            {header}
-            {''.join(cells)}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # --------------------------------------------------------
+    # Woche
+    # --------------------------------------------------------
 
-    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
-
-    selectable_days = [d for week in weeks for d in week if d.month == month]
-    selected = st.date_input(
-        "Tag auswählen",
-        value=parse_iso(st.session_state.selected_day)
-        if parse_iso(st.session_state.selected_day).month == month
-        else month_first,
-        min_value=month_first,
-        max_value=date(year, month, calendar.monthrange(year, month)[1]),
-        label_visibility="collapsed",
-    )
-    st.session_state.selected_day = iso(selected)
-
-    s = iso(selected)
-    st.markdown(
-        f'<div class="card"><h3 style="margin-top:0;">{format_day_long(s)}</h3>',
-        unsafe_allow_html=True,
-    )
-
-    selected_exams = [e for e in exams if e.get("date") == s]
-    selected_tasks = [t for t in tasks if t.get("due") == s]
-    selected_items = get_day_items(s, exams, tasks, chores)
-
-    if not selected_exams and not selected_tasks and not selected_items:
-        st.markdown('<span class="mono">Keine Einträge an diesem Tag.</span>', unsafe_allow_html=True)
-
-    for ex in selected_exams:
-        st.markdown(f'<b style="color:#A6433D;">Prüfung: {ex["subject"]}</b>', unsafe_allow_html=True)
-    for task in selected_tasks:
-        st.markdown(f'<b style="color:#2E6B60;">Abgabe: {task["title"]} ({task.get("time","23:59")})</b>', unsafe_allow_html=True)
-
-    for item in selected_items:
-        typ = item["type"]
-        if typ == "study":
-            label, cls = f'{item["label"]}', "color-study"
-        elif typ == "chore":
-            label, cls = f'Aufgabe: {item["label"]}', "color-chore"
-        elif typ == "freizeit":
-            label, cls = "Freizeit", "color-free"
-        else:
-            label, cls = f'Auftrag: {item["label"]}', "color-task"
-
-        st.markdown(
-            f'<div class="{cls} mono" style="margin-top:.25rem;">'
-            f'{label}: {item["start"]}–{item["end"]}</div>',
-            unsafe_allow_html=True,
+    with tab_week:
+        render_week(
+            exams,
+            tasks,
+            chores,
+            study_plans,
+            task_plans,
         )
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    # --------------------------------------------------------
+    # Monat
+    # --------------------------------------------------------
+
+    with tab_month:
+        render_month(
+            exams,
+            tasks,
+            chores,
+        )
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+    main()
