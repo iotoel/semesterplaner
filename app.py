@@ -517,11 +517,16 @@ def load_data() -> dict:
 
 def save_data(data: dict) -> None:
     """Speichert daten.json zurück ins GitHub-Repository."""
-
     token = st.secrets.get("GITHUB_TOKEN")
     repo = st.secrets.get("GITHUB_REPO")
-    file_path = st.secrets.get("GITHUB_FILE", "daten.json")
-    branch = st.secrets.get("GITHUB_BRANCH", "main")
+    file_path = st.secrets.get(
+        "GITHUB_FILE",
+        "daten.json",
+    )
+    branch = st.secrets.get(
+        "GITHUB_BRANCH",
+        "main",
+    )
 
     if not token:
         raise RuntimeError(
@@ -544,7 +549,7 @@ def save_data(data: dict) -> None:
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # Aktuelle Datei inkl. SHA holen
+    # Aktuelle Datei und deren SHA holen
     response = requests.get(
         url,
         headers=headers,
@@ -555,6 +560,10 @@ def save_data(data: dict) -> None:
 
     file_info = response.json()
     sha = file_info["sha"]
+
+    # JSON in Base64 umwandeln
+    import base64
+    import json
 
     content = json.dumps(
         data,
@@ -581,6 +590,7 @@ def save_data(data: dict) -> None:
     )
     response.raise_for_status()
 
+    # Cache leeren, damit die neue JSON geladen wird
     load_data.clear()
 
 
@@ -1297,23 +1307,22 @@ def render_overview(
         old_value = bool(task.get("done", False))
 
         if checked != old_value:
-            task["done"] = checked
 
-            # Originaldaten aktualisieren.
-            # Dadurch wird nicht nur die gefilterte Liste verändert.
             for original_task in data.get("tasks", []):
-                if original_task is task:
+                if original_task.get("id") == task.get("id"):
                     original_task["done"] = checked
                     break
 
             try:
                 save_data(data)
+                st.success("Auftrag gespeichert")
+                load_data.clear()
                 st.rerun()
+
             except Exception as error:
-                st.error(
-                    "Der Status konnte nicht in GitHub gespeichert werden."
-                )
-                st.code(str(error))
+                st.error("GitHub-Speicherung fehlgeschlagen")
+                st.exception(error)
+
 
     # --------------------------------------------------------
     # Ämtli
