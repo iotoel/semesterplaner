@@ -65,7 +65,7 @@ SUBJECT_COLORS = {
     "Chemie": (52, 73, 94),
     "Biologie": (39, 174, 96),
     "Informatik": (127, 140, 141),
-    "Latein": (127, 0, 255),
+    "Latein": (0, 255, 255),
 }
 
 
@@ -510,15 +510,17 @@ def load_data() -> dict:
         params={"ref": branch},
         timeout=20,
     )
-
+    st.write("Status:", response.status_code)
+    st.write(response.text)
     response.raise_for_status()
 
     return response.json()
 
 def save_data(data: dict) -> None:
     """Speichert daten.json zurück ins GitHub-Repository."""
-    token = st.secrets.get("GITHUB_TOKEN")
-    repo = st.secrets.get("GITHUB_REPO")
+
+    token = st.secrets["GITHUB_TOKEN"]
+    repo = st.secrets["GITHUB_REPO"]
     file_path = st.secrets.get(
         "GITHUB_FILE",
         "daten.json",
@@ -527,16 +529,6 @@ def save_data(data: dict) -> None:
         "GITHUB_BRANCH",
         "main",
     )
-
-    if not token:
-        raise RuntimeError(
-            "GITHUB_TOKEN fehlt in den Streamlit-Secrets."
-        )
-
-    if not repo:
-        raise RuntimeError(
-            "GITHUB_REPO fehlt in den Streamlit-Secrets."
-        )
 
     url = (
         f"https://api.github.com/repos/"
@@ -549,36 +541,38 @@ def save_data(data: dict) -> None:
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # Aktuelle Datei und deren SHA holen
+    # Aktuelle SHA holen
     response = requests.get(
         url,
         headers=headers,
         params={"ref": branch},
         timeout=20,
     )
+    st.write("Status:", response.status_code)
+    st.write(response.text)
     response.raise_for_status()
 
-    file_info = response.json()
-    sha = file_info["sha"]
+    current_sha = response.json()["sha"]
 
-    # JSON in Base64 umwandeln
-    import base64
-    import json
-
-    content = json.dumps(
-        data,
-        ensure_ascii=False,
-        indent=2,
-    )
+    # Nur die eigentlichen Daten speichern
+    save_content = {
+        "exams": data.get("exams", []),
+        "tasks": data.get("tasks", []),
+        "chores": data.get("chores", []),
+    }
 
     encoded_content = base64.b64encode(
-        content.encode("utf-8")
+        json.dumps(
+            save_content,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
     ).decode("ascii")
 
     payload = {
         "message": "Auftragsstatus aktualisiert",
         "content": encoded_content,
-        "sha": sha,
+        "sha": current_sha,
         "branch": branch,
     }
 
@@ -588,9 +582,10 @@ def save_data(data: dict) -> None:
         json=payload,
         timeout=20,
     )
+    st.write("Status:", response.status_code)
+    st.write(response.text)
     response.raise_for_status()
 
-    # Cache leeren, damit die neue JSON geladen wird
     load_data.clear()
 
 
@@ -1314,6 +1309,8 @@ def render_overview(
                     break
 
             try:
+                st.write(data["tasks"])
+                st.warning("Speicherfunktion wird aufgerufen")
                 save_data(data)
                 st.success("Auftrag gespeichert")
                 load_data.clear()
@@ -1733,6 +1730,16 @@ def main() -> None:
 
     try:
         data = load_data()
+        st.write("Token vorhanden:", bool(st.secrets.get("GITHUB_TOKEN")))
+        st.write("Repo:", st.secrets.get("GITHUB_REPO"))
+        st.write("Branch:", st.secrets.get("GITHUB_BRANCH"))
+        st.write("File:", st.secrets.get("GITHUB_FILE"))
+        if st.button("GitHub-Test"):
+            try:
+                save_data(data)
+                st.success("save_data() wurde ausgeführt")
+            except Exception as e:
+                st.error(str(e))
 
     except Exception as error:
         st.error(
