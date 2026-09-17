@@ -513,7 +513,7 @@ def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None
         render_item_card(chore.get("title", "Ämtli"), color=COLOR_CHORE)
 
 
-def render_week(exams, tasks, chores, study_plans, task_plans) -> None:
+def render_week(data, exams, tasks, chores, study_plans, task_plans) -> None:
     st.session_state.setdefault("week_offset", 0)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
@@ -540,7 +540,37 @@ def render_week(exams, tasks, chores, study_plans, task_plans) -> None:
             if not items:
                 st.caption("—")
             for item in items:
-                render_item_card(item["title"], format_time_range(item), item.get("color"), done=item.get("done", False))
+                if item.get("type") == "task":
+                    done = bool(item.get("done", False))
+                elif current_date == today:
+                    item_identifier = get_daily_item_identifier(item, current_date)
+                    done = get_daily_completion(data, item_identifier)
+                else:
+                    done = False
+
+                render_item_card(
+                    item["title"],
+                    format_time_range(item),
+                    item.get("color"),
+                    done=done,
+                )
+
+            due_tasks = [
+                task
+                for task in tasks
+                if parse_date(task.get("due")) == current_date
+            ]
+
+            if due_tasks:
+                st.caption("Fällig")
+
+            for task in due_tasks:
+                render_item_card(
+                    f"📌 {get_task_title(task)}",
+                    "Auftrag fällig",
+                    get_task_color(task),
+                    done=bool(task.get("done", False)),
+                )
 
 
 def render_month(exams, tasks, chores) -> None:
@@ -567,9 +597,12 @@ def render_month(exams, tasks, chores) -> None:
     *{box-sizing:border-box}body{margin:0;padding:0;background:#EEF1EC;font-family:Arial,sans-serif}
     .calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;width:100%}
     .weekday{text-align:center;color:#5B6472;font-family:monospace;font-size:13px;font-weight:500;padding:7px 4px}
-    .calendar-cell{min-height:115px;background:#FFF;border:1px solid #DADFD6;border-radius:10px;padding:10px;position:relative}
+    .calendar-cell{min-height:145px;background:#FFF;border:1px solid #DADFD6;border-radius:10px;padding:10px;position:relative}
     .calendar-cell.today{background:#FBF5DF;border:2px solid #C9A227}.calendar-cell.outside{background:#F4F5F2;opacity:.45}
-    .day-number{color:#1C2430;font-family:monospace;font-size:14px;font-weight:500}
+    .day-number{color:#1C2430;font-family:monospace;font-size:14px;font-weight:500;margin-bottom:7px}
+    .month-items{display:flex;flex-direction:column;gap:4px;padding-bottom:18px}
+    .month-task{font-size:11px;line-height:1.2;padding:3px 5px;border-left:4px solid #C9A227;background:#FBF5DF;border-radius:4px;color:#1C2430;overflow-wrap:anywhere}
+    .month-task.done{text-decoration:line-through;opacity:.55}
     .dots{position:absolute;left:10px;bottom:10px;display:flex;gap:6px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%}
     .dot-red{background:#C94C4C}.dot-gold{background:#C9A227}.dot-teal{background:#3D8B87}
     """
@@ -589,9 +622,29 @@ def render_month(exams, tasks, chores) -> None:
                 dots += '<span class="dot dot-gold"></span>'
             if any(is_chore_active(chore, current_date) for chore in chores):
                 dots += '<span class="dot dot-teal"></span>'
-            cells += f'<div class="{" ".join(classes)}"><div class="day-number">{current_date.day}</div><div class="dots">{dots}</div></div>'
+
+            due_tasks = [
+                task
+                for task in tasks
+                if task.get("due") == current_iso
+            ]
+
+            task_entries = "".join(
+                f'<div class="month-task{" done" if task.get("done", False) else ""}">'
+                f'{escape_html(get_task_title(task))}'
+                f'</div>'
+                for task in due_tasks
+            )
+
+            cells += (
+                f'<div class="{" ".join(classes)}">'
+                f'<div class="day-number">{current_date.day}</div>'
+                f'<div class="month-items">{task_entries}</div>'
+                f'<div class="dots">{dots}</div>'
+                f'</div>'
+            )
     html = f'<!DOCTYPE html><html><head><style>{style}</style></head><body><div class="calendar">{cells}</div></body></html>'
-    components.html(html, height=(len(weeks) + 1) * 120 + 20, scrolling=False)
+    components.html(html, height=(len(weeks) + 1) * 150 + 20, scrolling=False)
 
 
 def main() -> None:
@@ -620,7 +673,7 @@ def main() -> None:
     with tab_overview:
         render_overview(data, exams, tasks, chores, study_plans, task_plans)
     with tab_week:
-        render_week(exams, tasks, chores, study_plans, task_plans)
+        render_week(data, exams, tasks, chores, study_plans, task_plans)
     with tab_month:
         render_month(exams, tasks, chores)
 
