@@ -19,7 +19,9 @@ angezeigt.
 
 from __future__ import annotations
 
+import base64
 import calendar
+import json
 from datetime import date, datetime, timedelta
 
 import requests
@@ -220,6 +222,7 @@ def render_item_card(
     title: str,
     meta: str = "",
     color: tuple[int, int, int] | None = None,
+    done: bool = False,
 ) -> None:
     """
     Rendert eine Karte.
@@ -233,6 +236,13 @@ def render_item_card(
         else ""
     )
 
+    title_style = ""
+    if done:
+        title_style = (
+            ' style="text-decoration: line-through; '
+            'opacity: 0.55;"'
+        )
+
     color_style = ""
 
     if color:
@@ -243,7 +253,7 @@ def render_item_card(
 
     render_html(
         f'<div class="item-card"{color_style}>'
-        f'<div class="item-title">'
+        f'<div class="item-title"{title_style}>'
         f'{escape_html(title)}'
         f'</div>'
         f'{meta_html}'
@@ -504,6 +514,74 @@ def load_data() -> dict:
     response.raise_for_status()
 
     return response.json()
+
+def save_data(data: dict) -> None:
+    """Speichert daten.json zurück ins GitHub-Repository."""
+
+    token = st.secrets.get("GITHUB_TOKEN")
+    repo = st.secrets.get("GITHUB_REPO")
+    file_path = st.secrets.get("GITHUB_FILE", "daten.json")
+    branch = st.secrets.get("GITHUB_BRANCH", "main")
+
+    if not token:
+        raise RuntimeError(
+            "GITHUB_TOKEN fehlt in den Streamlit-Secrets."
+        )
+
+    if not repo:
+        raise RuntimeError(
+            "GITHUB_REPO fehlt in den Streamlit-Secrets."
+        )
+
+    url = (
+        f"https://api.github.com/repos/"
+        f"{repo}/contents/{file_path}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    # Aktuelle Datei inkl. SHA holen
+    response = requests.get(
+        url,
+        headers=headers,
+        params={"ref": branch},
+        timeout=20,
+    )
+    response.raise_for_status()
+
+    file_info = response.json()
+    sha = file_info["sha"]
+
+    content = json.dumps(
+        data,
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    encoded_content = base64.b64encode(
+        content.encode("utf-8")
+    ).decode("ascii")
+
+    payload = {
+        "message": "Auftragsstatus aktualisiert",
+        "content": encoded_content,
+        "sha": sha,
+        "branch": branch,
+    }
+
+    response = requests.put(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=20,
+    )
+    response.raise_for_status()
+
+    load_data.clear()
 
 
 # ============================================================
@@ -1061,6 +1139,12 @@ def get_day_items(
             "end": end,
             "type": "task",
 
+            # Index des ursprünglichen Auftrags
+            "task_index": index,
+
+            # Erledigt?
+            "done": bool(task.get("done", False)),
+
             # Woche/Übersicht:
             # Farbe des Auftragsfachs
             "color": get_task_color(task),
@@ -1099,6 +1183,7 @@ def format_time_range(
 # ============================================================
 
 def render_overview(
+    data,
     exams,
     tasks,
     chores,
@@ -1181,19 +1266,54 @@ def render_overview(
             "Keine offenen Aufträge."
         )
 
-    for task in tasks:
-        d = parse_date(
-            task.get("due")
-        )
+    for index, task in enumerate(tasks):
+        d = parse_date(task.get("due"))
 
-        render_item_card(
-            get_task_title(task),
-            f"Fällig: {format_date(d)}",
+        checkbox_key = f"task_done_{index}"
 
-            # Übersicht:
-            # Farbe des Auftragsfachs
-            get_task_color(task),
-        )
+        # Aktuellen gespeicherten Zustand übernehmen
+        if checkbox_key not in st.session_state:
+            st.session_state[checkbox_key] = bool(
+                task.get("done", False)
+            )
+
+        col1, col2 = st.columns([0.05, 0.95])
+
+        with col1:
+            checked = st.checkbox(
+                "",
+                key=checkbox_key,
+            )
+
+        with col2:
+            render_item_card(
+                get_task_title(task),
+                f"Fällig: {format_date(d)}",
+                get_task_color(task),
+                done=checked,
+            )
+
+        # Nur speichern, wenn sich der Wert geändert hat
+        old_value = bool(task.get("done", False))
+
+        if checked != old_value:
+            task["done"] = checked
+
+            # Originaldaten aktualisieren.
+            # Dadurch wird nicht nur die gefilterte Liste verändert.
+            for original_task in data.get("tasks", []):
+                if original_task is task:
+                    original_task["done"] = checked
+                    break
+
+            try:
+                save_data(data)
+                st.rerun()
+            except Exception as error:
+                st.error(
+                    "Der Status konnte nicht in GitHub gespeichert werden."
+                )
+                st.code(str(error))
 
     # --------------------------------------------------------
     # Ämtli
@@ -1311,6 +1431,9 @@ def render_week(
                     # Woche:
                     # Fachfarbe oder Ämtli-Farbe
                     item.get("color"),
+
+                    # Erledigte Aufträge durchstreichen
+                    done=item.get("done", False),
                 )
 
 
@@ -1667,6 +1790,7 @@ def main() -> None:
 
     with tab_overview:
         render_overview(
+            data,
             exams,
             tasks,
             chores,
