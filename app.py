@@ -4,50 +4,38 @@ import base64
 import calendar
 import hashlib
 import json
+import uuid
 from datetime import date, datetime, timedelta
 from html import escape
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
-st.set_page_config(
-    page_title="Semesterplaner",
-    page_icon="🗓️",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Semesterplaner", page_icon="🗓️", layout="wide", initial_sidebar_state="collapsed")
 
+COLOR_EXAM = (201, 76, 76)
+COLOR_TASK = (201, 162, 39)
 COLOR_CHORE = (61, 139, 135)
 COLOR_SUBJECT_DEFAULT = (0, 255, 255)
 SUBJECT_COLORS = {
-    "Mathematik": (52, 152, 219),
-    "Deutsch": (155, 89, 182),
-    "Englisch": (46, 204, 113),
-    "Französisch": (241, 196, 15),
-    "Geschichte": (230, 126, 34),
-    "Geografie": (26, 188, 156),
-    "Physik": (231, 76, 60),
-    "Chemie": (52, 73, 94),
-    "Biologie": (39, 174, 96),
-    "Informatik": (127, 140, 141),
+    "Mathematik": (52, 152, 219), "Deutsch": (155, 89, 182),
+    "Englisch": (46, 204, 113), "Französisch": (241, 196, 15),
+    "Geschichte": (230, 126, 34), "Geografie": (26, 188, 156),
+    "Physik": (231, 76, 60), "Chemie": (52, 73, 94),
+    "Biologie": (39, 174, 96), "Informatik": (127, 140, 141),
     "Latein": (0, 255, 255),
 }
 WEEKDAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-MONTH_NAMES = [
-    "Januar", "Februar", "März", "April", "Mai", "Juni",
-    "Juli", "August", "September", "Oktober", "November", "Dezember",
-]
+MONTH_NAMES = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"]
 GAP_MINUTES = 10
 MAX_STUDY_DAYS = 10
 MAX_MINUTES_PER_DAY = 45
 WORK_HOURS = {
-    0: [("13:00", "20:00")],
-    1: [("13:00", "20:00")],
+    0: [("13:00", "20:00")], 1: [("13:00", "20:00")],
     2: [("13:00", "14:00"), ("18:00", "20:00")],
-    3: [("16:30", "20:00")],
-    4: [("17:00", "20:00")],
-    5: [("08:00", "20:00")],
-    6: [],
+    3: [("16:30", "20:00")], 4: [("17:00", "20:00")],
+    5: [("08:00", "20:00")], 6: [],
 }
 
 
@@ -89,24 +77,15 @@ def get_exam_color(exam: dict) -> tuple[int, int, int]:
 
 
 def get_task_color(task: dict) -> tuple[int, int, int]:
-    values = (task.get("subject"), task.get("fach"), task.get("title"))
-    return get_subject_color(" ".join(str(value) for value in values if value))
+    text = " ".join(str(v) for v in (task.get("subject"), task.get("fach"), task.get("title")) if v)
+    return get_subject_color(text)
 
 
-def render_item_card(
-    title: str,
-    meta: str = "",
-    color: tuple[int, int, int] | None = None,
-    done: bool = False,
-) -> None:
+def render_item_card(title: str, meta: str = "", color: tuple[int, int, int] | None = None, done: bool = False) -> None:
     meta_html = f'<div class="item-meta">{escape_html(meta)}</div>' if meta else ""
     title_style = ' style="text-decoration:line-through;opacity:.55;"' if done else ""
     color_style = f' style="border-left:5px solid {rgb_to_css(color)};"' if color else ""
-    render_html(
-        f'<div class="item-card"{color_style}>'
-        f'<div class="item-title"{title_style}>{escape_html(title)}</div>'
-        f'{meta_html}</div>'
-    )
+    render_html(f'<div class="item-card"{color_style}><div class="item-title"{title_style}>{escape_html(title)}</div>{meta_html}</div>')
 
 
 def inject_css() -> None:
@@ -114,16 +93,13 @@ def inject_css() -> None:
     <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
     :root{--bg:#EEF1EC;--ink:#1C2430;--muted:#5B6472;--border:#DADFD6;--white:#FFF}
-    html{color-scheme:light!important}
-    body,[data-testid="stAppViewContainer"],[data-testid="stAppViewContainer"]>.main{background:var(--bg)!important;color:var(--ink)!important}
-    [data-testid="stHeader"],[data-testid="stToolbar"]{display:none}
-    #MainMenu,footer{visibility:hidden}
+    html{color-scheme:light!important}body,[data-testid="stAppViewContainer"],[data-testid="stAppViewContainer"]>.main{background:var(--bg)!important;color:var(--ink)!important}
+    [data-testid="stHeader"],[data-testid="stToolbar"]{display:none}#MainMenu,footer{visibility:hidden}
     .block-container{max-width:1400px;padding-top:2rem;padding-bottom:3rem}
     h1,h2,h3{color:var(--ink);font-family:"Libre Baskerville",serif}
     .section-title{color:var(--ink);font-family:"Libre Baskerville",serif;font-size:1.3rem;font-weight:700;margin:1.2rem 0 .8rem}
     .item-card{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;margin-bottom:.5rem}
-    .item-title{color:var(--ink);font-size:1rem;font-weight:600}
-    .item-meta{color:var(--muted);font-size:.85rem;margin-top:.15rem}
+    .item-title{color:var(--ink);font-size:1rem;font-weight:600}.item-meta{color:var(--muted);font-size:.85rem;margin-top:.15rem}
     </style>
     """)
 
@@ -137,16 +113,16 @@ def parse_date(value) -> date | None:
         return None
 
 
-def iso(value: date) -> str:
-    return value.isoformat()
+def iso(d: date) -> str:
+    return d.isoformat()
 
 
-def format_date(value: date | None) -> str:
-    return value.strftime("%d.%m.%Y") if value else ""
+def format_date(d: date | None) -> str:
+    return d.strftime("%d.%m.%Y") if d else ""
 
 
-def format_short_date(value: date | None) -> str:
-    return value.strftime("%d.%m.") if value else ""
+def format_short_date(d: date | None) -> str:
+    return d.strftime("%d.%m.") if d else ""
 
 
 def parse_time(value: str):
@@ -162,9 +138,7 @@ def get_exam_title(exam: dict) -> str:
 
 
 def get_exam_minutes(exam: dict) -> int:
-    if "hours" in exam:
-        return int(exam.get("hours", 0)) * 60
-    return int(exam.get("duration", 45))
+    return int(exam.get("hours", 0)) * 60 if "hours" in exam else int(exam.get("duration", 45))
 
 
 def get_task_title(task: dict) -> str:
@@ -172,9 +146,7 @@ def get_task_title(task: dict) -> str:
 
 
 def get_task_minutes(task: dict) -> int:
-    if "hours" in task:
-        return int(task.get("hours", 0)) * 60
-    return int(task.get("duration", 45))
+    return int(task.get("hours", 0)) * 60 if "hours" in task else int(task.get("duration", 45))
 
 
 def get_github_config() -> tuple[str, str, str, str]:
@@ -194,11 +166,7 @@ def get_github_url(repo: str, file_path: str) -> str:
 
 
 def get_github_headers(token: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
 
 def get_github_error_message(response: requests.Response, fallback: str) -> str:
@@ -213,9 +181,7 @@ def get_github_error_message(response: requests.Response, fallback: str) -> str:
         409: "GitHub-Konflikt beim Speichern. Die Datei wurde gleichzeitig geändert.",
         422: "GitHub hat die Änderung abgelehnt. Branch, SHA und Dateipfad prüfen.",
     }
-    if response.status_code in messages:
-        return messages[response.status_code]
-    return f"{fallback} GitHub meldet: {message}" if message else f"{fallback} HTTP-Status {response.status_code}"
+    return messages.get(response.status_code, f"{fallback} GitHub meldet: {message}" if message else f"{fallback} HTTP-Status {response.status_code}")
 
 
 def decode_github_content(payload: dict) -> dict:
@@ -223,8 +189,7 @@ def decode_github_content(payload: dict) -> dict:
     if not content:
         raise RuntimeError("GitHub hat keinen Dateiinhalt zurückgegeben.")
     try:
-        decoded = base64.b64decode(content.replace("\n", "")).decode("utf-8")
-        data = json.loads(decoded)
+        data = json.loads(base64.b64decode(content.replace("\n", "")).decode("utf-8"))
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeError("daten.json konnte nicht gelesen werden.") from error
     if not isinstance(data, dict):
@@ -238,12 +203,7 @@ def decode_github_content(payload: dict) -> dict:
 @st.cache_data(ttl=60)
 def load_data() -> dict:
     token, repo, file_path, branch = get_github_config()
-    response = requests.get(
-        get_github_url(repo, file_path),
-        headers=get_github_headers(token),
-        params={"ref": branch},
-        timeout=20,
-    )
+    response = requests.get(get_github_url(repo, file_path), headers=get_github_headers(token), params={"ref": branch}, timeout=20)
     if not response.ok:
         raise RuntimeError(get_github_error_message(response, "Daten konnten nicht geladen werden."))
     return decode_github_content(response.json())
@@ -258,13 +218,11 @@ def build_save_content(data: dict) -> dict:
     }
 
 
-def save_data(data: dict, commit_message: str = "Status aktualisiert") -> None:
+def save_data(data: dict, commit_message: str = "Auftragsstatus aktualisiert") -> None:
     token, repo, file_path, branch = get_github_config()
     url = get_github_url(repo, file_path)
     headers = get_github_headers(token)
-    encoded = base64.b64encode(
-        json.dumps(build_save_content(data), ensure_ascii=False, indent=2).encode("utf-8")
-    ).decode("ascii")
+    encoded = base64.b64encode(json.dumps(build_save_content(data), ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii")
     for attempt in range(2):
         metadata = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
         if not metadata.ok:
@@ -272,12 +230,7 @@ def save_data(data: dict, commit_message: str = "Status aktualisiert") -> None:
         sha = metadata.json().get("sha")
         if not sha:
             raise RuntimeError("GitHub hat keinen SHA-Wert zurückgegeben.")
-        response = requests.put(
-            url,
-            headers=headers,
-            json={"message": commit_message, "content": encoded, "sha": sha, "branch": branch},
-            timeout=20,
-        )
+        response = requests.put(url, headers=headers, json={"message": commit_message, "content": encoded, "sha": sha, "branch": branch}, timeout=20)
         if response.status_code in (200, 201):
             load_data.clear()
             return
@@ -290,9 +243,7 @@ def get_task_identifier(task: dict) -> str:
     if existing_id:
         return existing_id
     identity = {key: task.get(key) for key in ("title", "subject", "fach", "due", "hours", "duration")}
-    return hashlib.sha256(
-        json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()[:16]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
 def update_task_done(data: dict, task_identifier: str, done: bool) -> None:
@@ -304,38 +255,99 @@ def update_task_done(data: dict, task_identifier: str, done: bool) -> None:
 
 
 def sync_task_checkbox_keys(task_identifier: str, done: bool) -> None:
-    suffix = f"_{task_identifier}"
-    for key in list(st.session_state.keys()):
-        if isinstance(key, str) and key.endswith(suffix) and "task_done" in key:
+    for prefix in ("task_done", "today_task_done"):
+        key = f"{prefix}_{task_identifier}"
+        if key in st.session_state:
             st.session_state[key] = done
 
 
-def save_task_checkbox(task_identifier: str, checkbox_key: str) -> None:
-    checked = bool(st.session_state.get(checkbox_key, False))
+def save_task_checkbox(
+    task_identifier: str,
+    checkbox_key: str,
+) -> None:
+    checked = bool(
+        st.session_state.get(
+            checkbox_key,
+            False,
+        )
+    )
+
     try:
         load_data.clear()
+
         current_data = load_data()
-        update_task_done(current_data, task_identifier, checked)
-        save_data(current_data, "Auftragsstatus aktualisiert")
-        sync_task_checkbox_keys(task_identifier, checked)
-        st.session_state["save_success"] = "Auftrag wurde gespeichert."
-        st.session_state.pop("save_error", None)
+
+        previous_state = False
+
+        for task in current_data.get(
+            "tasks",
+            [],
+        ):
+            if (
+                get_task_identifier(task)
+                == task_identifier
+            ):
+                previous_state = bool(
+                    task.get(
+                        "done",
+                        False,
+                    )
+                )
+                break
+
+        update_task_done(
+            current_data,
+            task_identifier,
+            checked,
+        )
+
+        save_data(
+            current_data,
+            "Auftragsstatus aktualisiert",
+        )
+
+        sync_task_checkbox_keys(
+            task_identifier,
+            checked,
+        )
+
+        if checked and not previous_state:
+            st.session_state["show_balloons"] = True
+
+        st.session_state[
+            "save_success"
+        ] = (
+            "Auftrag wurde gespeichert."
+        )
+
+        st.session_state.pop(
+            "save_error",
+            None,
+        )
+
     except Exception as error:
-        st.session_state[checkbox_key] = not checked
-        sync_task_checkbox_keys(task_identifier, not checked)
-        st.session_state["save_error"] = str(error)
+        st.session_state[
+            checkbox_key
+        ] = not checked
+
+        st.session_state[
+            "save_error"
+        ] = str(error)
 
 
-def render_task_checkbox(task: dict, widget_prefix: str) -> bool:
+
+def render_task_checkbox(task: dict, prefix: str) -> bool:
     identifier = get_task_identifier(task)
-    key = f"{widget_prefix}_task_done_{identifier}"
+    key = f"{prefix}_{identifier}"
     if key not in st.session_state:
         st.session_state[key] = bool(task.get("done", False))
     st.checkbox("", key=key, on_change=save_task_checkbox, args=(identifier, key))
     return bool(st.session_state[key])
 
 
+
 def get_daily_item_identifier(item: dict, item_date: date) -> str:
+    """Erzeugt eine stabile Kennung für einen Tagesplaneintrag."""
     identity = {
         "date": iso(item_date),
         "type": item.get("type"),
@@ -353,34 +365,38 @@ def get_daily_completion(data: dict, item_identifier: str) -> bool:
     return bool(data.get("completions", {}).get(item_identifier, False))
 
 
-def sync_daily_checkbox_keys(item_identifier: str, done: bool) -> None:
-    suffix = f"daily_done_{item_identifier}"
-    for key in list(st.session_state.keys()):
-        if isinstance(key, str) and key.endswith(suffix):
-            st.session_state[key] = done
-
-
 def save_daily_checkbox(item_identifier: str, checkbox_key: str) -> None:
+    """Speichert Lernen, Ämtli und weitere Tagespunkte datumsspezifisch."""
     checked = bool(st.session_state.get(checkbox_key, False))
     try:
         load_data.clear()
         current_data = load_data()
         completions = current_data.setdefault("completions", {})
+        previous_state = bool(completions.get(item_identifier, False))
+
         if checked:
             completions[item_identifier] = True
         else:
             completions.pop(item_identifier, None)
-        save_data(current_data, "Tagesstatus aktualisiert")
-        sync_daily_checkbox_keys(item_identifier, checked)
+
+        save_data(current_data, commit_message="Tagesstatus aktualisiert")
+
+        if checked and not previous_state:
+            st.session_state["show_balloons"] = True
+
         st.session_state["save_success"] = "Status wurde gespeichert."
         st.session_state.pop("save_error", None)
     except Exception as error:
         st.session_state[checkbox_key] = not checked
-        sync_daily_checkbox_keys(item_identifier, not checked)
         st.session_state["save_error"] = str(error)
 
 
-def render_daily_checkbox(data: dict, item: dict, item_date: date, widget_prefix: str) -> bool:
+def render_daily_checkbox(
+    data: dict,
+    item: dict,
+    item_date: date,
+    widget_prefix: str,
+) -> bool:
     identifier = get_daily_item_identifier(item, item_date)
     key = f"{widget_prefix}_daily_done_{identifier}"
     if key not in st.session_state:
@@ -391,8 +407,8 @@ def render_daily_checkbox(data: dict, item: dict, item_date: date, widget_prefix
 
 def prepare_data(data: dict):
     today = date.today()
-    exams = [exam for exam in data.get("exams", []) if (exam_date := parse_date(exam.get("date"))) and exam_date >= today]
-    tasks = [task for task in data.get("tasks", []) if (due_date := parse_date(task.get("due"))) and due_date >= today]
+    exams = [exam for exam in data.get("exams", []) if (d := parse_date(exam.get("date"))) and d >= today]
+    tasks = [task for task in data.get("tasks", []) if (d := parse_date(task.get("due"))) and d >= today]
     chores = []
     for chore in data.get("chores", []):
         start = parse_date(chore.get("startDate"))
@@ -402,16 +418,16 @@ def prepare_data(data: dict):
     return exams, tasks, chores
 
 
-def is_chore_active(chore: dict, day: date) -> bool:
+def is_chore_active(chore: dict, d: date) -> bool:
     start = parse_date(chore.get("startDate"))
     end = parse_date(chore.get("endDate"))
-    if not start or day < start or (end and day > end) or day.weekday() == 6:
+    if not start or d < start or (end and d > end) or d.weekday() == 6:
         return False
     recurring = chore.get("frequency") == "recurring" or chore.get("recurring", False)
     if not recurring:
-        return day == start
+        return d == start
     interval = int(chore.get("interval", chore.get("intervalDays", 1))) or 1
-    return (day - start).days % interval == 0
+    return (d - start).days % interval == 0
 
 
 def future_days_until(end_date: date, max_days: int = MAX_STUDY_DAYS) -> list[date]:
@@ -429,15 +445,15 @@ def distribute_minutes(total_minutes: int, days: list[date], max_per_day: int = 
         return {}
     total_minutes = (total_minutes // 15) * 15
     max_per_day = (max_per_day // 15) * 15
-    result = {day: 0 for day in days}
+    result = {d: 0 for d in days}
     remaining = total_minutes
     while remaining >= 15:
         changed = False
-        for day in days:
+        for d in days:
             if remaining < 15:
                 break
-            if result[day] < max_per_day:
-                result[day] += 15
+            if result[d] < max_per_day:
+                result[d] += 15
                 remaining -= 15
                 changed = True
         if not changed:
@@ -456,20 +472,15 @@ def build_task_plan(task: dict) -> dict[date, int]:
 
 
 def build_all_plans(exams: list[dict], tasks: list[dict]):
-    study_plans = {index: build_study_plan(exam) for index, exam in enumerate(exams)}
-    task_plans = {index: build_task_plan(task) for index, task in enumerate(tasks)}
-    return study_plans, task_plans
+    return ({i: build_study_plan(exam) for i, exam in enumerate(exams)}, {i: build_task_plan(task) for i, task in enumerate(tasks)})
 
 
-def get_work_slots(day: date) -> list[tuple[datetime, datetime]]:
-    return [
-        (datetime.combine(day, parse_time(start)), datetime.combine(day, parse_time(end)))
-        for start, end in WORK_HOURS.get(day.weekday(), [])
-    ]
+def get_work_slots(d: date) -> list[tuple[datetime, datetime]]:
+    return [(datetime.combine(d, parse_time(start)), datetime.combine(d, parse_time(end))) for start, end in WORK_HOURS.get(d.weekday(), [])]
 
 
-def find_free_slot(day: date, busy: list[tuple[datetime, datetime]], duration: int):
-    for slot_start, slot_end in get_work_slots(day):
+def find_free_slot(d: date, busy: list[tuple[datetime, datetime]], duration: int):
+    for slot_start, slot_end in get_work_slots(d):
         current = slot_start
         overlapping = sorted((start, end) for start, end in busy if end > slot_start and start < slot_end)
         for busy_start, busy_end in overlapping:
@@ -481,46 +492,41 @@ def find_free_slot(day: date, busy: list[tuple[datetime, datetime]], duration: i
     return None
 
 
-def get_day_items(day: date, exams: list[dict], tasks: list[dict], chores: list[dict], study_plans: dict, task_plans: dict) -> list[dict]:
+def get_day_items(d: date, exams: list[dict], tasks: list[dict], chores: list[dict], study_plans: dict, task_plans: dict) -> list[dict]:
     items: list[dict] = []
     busy: list[tuple[datetime, datetime]] = []
-    if day.weekday() == 6:
+    if d.weekday() == 6:
         return items
     for chore in chores:
-        if is_chore_active(chore, day):
-            slot = find_free_slot(day, busy, int(chore.get("duration", 30)))
+        if is_chore_active(chore, d):
+            slot = find_free_slot(d, busy, int(chore.get("duration", 30)))
             if slot:
                 start, end = slot
                 items.append({"title": chore.get("title", "Ämtli"), "start": start, "end": end, "type": "chore", "color": COLOR_CHORE})
                 busy.append(slot)
-    if day.weekday() != 3:
-        work_slots = get_work_slots(day)
+    if d.weekday() != 3:
+        work_slots = get_work_slots(d)
         if work_slots:
             first_start, last_end = work_slots[0][0], work_slots[-1][1]
             midpoint = first_start + (last_end - first_start) / 2
-            leisure_start = midpoint - timedelta(minutes=45)
-            leisure_end = midpoint + timedelta(minutes=45)
+            leisure_start, leisure_end = midpoint - timedelta(minutes=45), midpoint + timedelta(minutes=45)
             free = not any(not (leisure_end <= start or leisure_start >= end) for start, end in busy)
             if leisure_start >= first_start and leisure_end <= last_end and free:
                 items.append({"title": "Freizeit", "start": leisure_start, "end": leisure_end, "type": "leisure", "color": None})
                 busy.append((leisure_start, leisure_end))
     for index, exam in enumerate(exams):
-        duration = study_plans.get(index, {}).get(day, 0)
-        slot = find_free_slot(day, busy, duration) if duration > 0 else None
+        duration = study_plans.get(index, {}).get(d, 0)
+        slot = find_free_slot(d, busy, duration) if duration > 0 else None
         if slot:
             start, end = slot
             items.append({"title": "Lernen: " + get_exam_title(exam), "start": start, "end": end, "type": "study", "color": get_exam_color(exam)})
             busy.append(slot)
     for index, task in enumerate(tasks):
-        duration = task_plans.get(index, {}).get(day, 0)
-        slot = find_free_slot(day, busy, duration) if duration > 0 else None
+        duration = task_plans.get(index, {}).get(d, 0)
+        slot = find_free_slot(d, busy, duration) if duration > 0 else None
         if slot:
             start, end = slot
-            items.append({
-                "title": get_task_title(task), "start": start, "end": end,
-                "type": "task", "task_index": index,
-                "done": bool(task.get("done", False)), "color": get_task_color(task),
-            })
+            items.append({"title": get_task_title(task), "start": start, "end": end, "type": "task", "task_index": index, "done": bool(task.get("done", False)), "color": get_task_color(task)})
             busy.append(slot)
     items.sort(key=lambda item: (item["start"] is None, item["start"] or datetime.max))
     return items
@@ -531,19 +537,196 @@ def format_time_range(item: dict) -> str:
     return f"{start.strftime('%H:%M')} – {end.strftime('%H:%M')}" if start and end else ""
 
 
-def show_save_messages() -> None:
-    success = st.session_state.pop("save_success", None)
-    error = st.session_state.pop("save_error", None)
-    if success:
-        st.success(success)
-    if error:
-        st.error("GitHub-Speicherung fehlgeschlagen.")
-        st.code(error)
+def get_entry_identifier(entry_type: str, entry: dict) -> str:
+    """Liefert eine stabile Kennung zum Löschen eines Eintrags."""
+    existing_id = str(entry.get("id", "")).strip()
+    if existing_id:
+        return existing_id
+
+    fields_by_type = {
+        "exams": ("subject", "title", "date", "hours", "duration"),
+        "tasks": ("subject", "fach", "title", "due", "hours", "duration"),
+        "chores": ("title", "startDate", "endDate", "duration", "frequency", "interval"),
+    }
+    identity = {
+        key: entry.get(key)
+        for key in fields_by_type.get(entry_type, tuple(sorted(entry.keys())))
+    }
+    return hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def delete_entry(entry_type: str, entry_identifier: str) -> None:
+    """Löscht genau einen Eintrag aus dem aktuellsten GitHub-Datenstand."""
+    load_data.clear()
+    current_data = load_data()
+    entries = current_data.get(entry_type, [])
+
+    delete_index = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if get_entry_identifier(entry_type, entry) == entry_identifier
+        ),
+        None,
+    )
+
+    if delete_index is None:
+        raise RuntimeError("Der Eintrag wurde in daten.json nicht gefunden.")
+
+    deleted_entry = entries.pop(delete_index)
+
+    if entry_type == "tasks":
+        task_identifier = get_task_identifier(deleted_entry)
+        sync_task_checkbox_keys(task_identifier, False)
+
+    save_data(current_data, commit_message="Eintrag gelöscht")
+    st.session_state["save_success"] = "Eintrag wurde gelöscht."
+    st.session_state.pop("save_error", None)
+
+
+def render_delete_button(
+    entry_type: str,
+    entry: dict,
+    widget_prefix: str,
+) -> None:
+    """Rendert einen eindeutigen Löschknopf für einen Eintrag."""
+    identifier = get_entry_identifier(entry_type, entry)
+    if st.button(
+        "🗑️",
+        key=f"delete_{widget_prefix}_{entry_type}_{identifier}",
+        help="Eintrag endgültig löschen",
+        use_container_width=True,
+    ):
+        try:
+            delete_entry(entry_type, identifier)
+            st.rerun()
+        except Exception as error:
+            st.session_state["save_error"] = str(error)
+            st.rerun()
+
+
+def add_entry(entry_type: str, entry: dict) -> None:
+    """Fügt einen Eintrag in den aktuellsten GitHub-Daten hinzu."""
+    load_data.clear()
+    current_data = load_data()
+    current_data.setdefault(entry_type, []).append(entry)
+    save_data(current_data, commit_message="Eintrag hinzugefügt")
+    st.session_state["save_success"] = "Eintrag wurde hinzugefügt."
+    st.session_state.pop("save_error", None)
+
+
+def render_add_entry_forms() -> None:
+    """Formulare zum Hinzufügen von Prüfungen, Aufträgen und Ämtli."""
+    with st.expander("＋ Eintrag hinzufügen", expanded=False):
+        exam_tab, task_tab, chore_tab = st.tabs(["Prüfung", "Auftrag", "Ämtli"])
+
+        with exam_tab:
+            with st.form("add_exam_form", clear_on_submit=True):
+                subject = st.text_input("Fach und Thema", key="new_exam_subject")
+                exam_date = st.date_input("Prüfungsdatum", min_value=date.today(), key="new_exam_date")
+                hours = st.number_input("Lernaufwand in Stunden", min_value=0.25, value=1.0, step=0.25, key="new_exam_hours")
+                submitted = st.form_submit_button("Prüfung hinzufügen", use_container_width=True)
+                if submitted:
+                    if not subject.strip():
+                        st.error("Bitte Fach und Thema eingeben.")
+                    else:
+                        try:
+                            add_entry("exams", {
+                                "id": uuid.uuid4().hex,
+                                "subject": subject.strip(),
+                                "date": iso(exam_date),
+                                "hours": hours,
+                            })
+                            st.rerun()
+                        except Exception as error:
+                            st.error("Prüfung konnte nicht gespeichert werden.")
+                            st.code(str(error))
+
+        with task_tab:
+            with st.form("add_task_form", clear_on_submit=True):
+                subject = st.text_input("Fach", key="new_task_subject")
+                title = st.text_input("Auftrag", key="new_task_title")
+                due_date = st.date_input("Fälligkeitsdatum", min_value=date.today(), key="new_task_due")
+                hours = st.number_input("Aufwand in Stunden", min_value=0.25, value=1.0, step=0.25, key="new_task_hours")
+                submitted = st.form_submit_button("Auftrag hinzufügen", use_container_width=True)
+                if submitted:
+                    if not title.strip():
+                        st.error("Bitte einen Auftragstitel eingeben.")
+                    else:
+                        try:
+                            add_entry("tasks", {
+                                "id": uuid.uuid4().hex,
+                                "subject": subject.strip(),
+                                "title": title.strip(),
+                                "due": iso(due_date),
+                                "hours": hours,
+                                "done": False,
+                            })
+                            st.rerun()
+                        except Exception as error:
+                            st.error("Auftrag konnte nicht gespeichert werden.")
+                            st.code(str(error))
+
+        with chore_tab:
+            with st.form("add_chore_form", clear_on_submit=True):
+                title = st.text_input("Ämtli", key="new_chore_title")
+                start_date = st.date_input("Startdatum", min_value=date.today(), key="new_chore_start")
+                has_end = st.checkbox("Enddatum festlegen", value=False, key="new_chore_has_end")
+                end_date = st.date_input(
+                    "Enddatum (wird nur verwendet, wenn oben aktiviert)",
+                    min_value=start_date,
+                    value=start_date,
+                    key="new_chore_end",
+                )
+                duration = st.number_input("Dauer in Minuten", min_value=5, value=30, step=5, key="new_chore_duration")
+                recurring = st.checkbox("Wiederkehrend", value=False, key="new_chore_recurring")
+                interval = st.number_input(
+                    "Intervall in Tagen (wird nur bei Wiederholung verwendet)",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key="new_chore_interval",
+                )
+                submitted = st.form_submit_button("Ämtli hinzufügen", use_container_width=True)
+                if submitted:
+                    if not title.strip():
+                        st.error("Bitte eine Bezeichnung für das Ämtli eingeben.")
+                    elif has_end and end_date < start_date:
+                        st.error("Das Enddatum darf nicht vor dem Startdatum liegen.")
+                    else:
+                        entry = {
+                            "id": uuid.uuid4().hex,
+                            "title": title.strip(),
+                            "startDate": iso(start_date),
+                            "duration": int(duration),
+                            "frequency": "recurring" if recurring else "once",
+                            "interval": int(interval) if recurring else 1,
+                        }
+                        if has_end:
+                            entry["endDate"] = iso(end_date)
+                        try:
+                            add_entry("chores", entry)
+                            st.rerun()
+                        except Exception as error:
+                            st.error("Ämtli konnte nicht gespeichert werden.")
+                            st.code(str(error))
 
 
 def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None:
     today = date.today()
-    show_save_messages()
+    success = st.session_state.pop("save_success", None)
+    error = st.session_state.pop("save_error", None)
+    if success:
+        st.success(success)
+    if st.session_state.pop("show_balloons", False):
+        st.balloons()
+    if error:
+        st.error("GitHub-Speicherung fehlgeschlagen.")
+        st.code(error)
+
+    render_add_entry_forms()
     render_section_title("Heute")
     today_items = get_day_items(today, exams, tasks, chores, study_plans, task_plans)
     if not today_items:
@@ -552,32 +735,54 @@ def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None
         col1, col2 = st.columns([0.05, 0.95])
         task = tasks[item["task_index"]] if item.get("type") == "task" else None
         with col1:
-            if task is not None:
-                checked = render_task_checkbox(task, "overview_today")
+            if task:
+                checked = render_task_checkbox(task, "today_task_done")
             else:
                 checked = render_daily_checkbox(data, item, today, "overview")
         with col2:
             render_item_card(item["title"], format_time_range(item), item.get("color"), done=checked)
+
     render_section_title("Prüfungen")
     if not exams:
         st.info("Keine kommenden Prüfungen.")
     for exam in exams:
-        render_item_card(get_exam_title(exam), format_date(parse_date(exam.get("date"))), get_exam_color(exam))
+        card_col, delete_col = st.columns([0.94, 0.06])
+        with card_col:
+            render_item_card(
+                get_exam_title(exam),
+                format_date(parse_date(exam.get("date"))),
+                get_exam_color(exam),
+            )
+        with delete_col:
+            render_delete_button("exams", exam, "overview_exam")
+
     render_section_title("Aufträge")
     if not tasks:
         st.info("Keine offenen Aufträge.")
     for task in tasks:
-        col1, col2 = st.columns([0.05, 0.95])
-        with col1:
-            checked = render_task_checkbox(task, "overview_list")
-        with col2:
-            render_item_card(get_task_title(task), f"Fällig: {format_date(parse_date(task.get('due')))}", get_task_color(task), done=checked)
+        check_col, card_col, delete_col = st.columns([0.05, 0.89, 0.06])
+        with check_col:
+            checked = render_task_checkbox(task, "task_done")
+        with card_col:
+            render_item_card(
+                get_task_title(task),
+                f"Fällig: {format_date(parse_date(task.get('due')))}",
+                get_task_color(task),
+                done=checked,
+            )
+        with delete_col:
+            render_delete_button("tasks", task, "overview_task")
+
     render_section_title("Ämtli")
     active_chores = [chore for chore in chores if is_chore_active(chore, today)]
     if not active_chores:
         st.info("Heute keine Ämtli.")
     for chore in active_chores:
-        render_item_card(chore.get("title", "Ämtli"), color=COLOR_CHORE)
+        card_col, delete_col = st.columns([0.94, 0.06])
+        with card_col:
+            render_item_card(chore.get("title", "Ämtli"), color=COLOR_CHORE)
+        with delete_col:
+            render_delete_button("chores", chore, "overview_chore")
 
 
 def render_week(data, exams, tasks, chores, study_plans, task_plans) -> None:
@@ -604,119 +809,260 @@ def render_week(data, exams, tasks, chores, study_plans, task_plans) -> None:
         with columns[index]:
             st.markdown(f"**{WEEKDAYS[index]}**  \n`{format_short_date(current_date)}`")
             items = get_day_items(current_date, exams, tasks, chores, study_plans, task_plans)
-            due_tasks = [task for task in tasks if parse_date(task.get("due")) == current_date]
-            if not items and not due_tasks:
+            if not items:
                 st.caption("—")
             for item in items:
                 if item.get("type") == "task":
                     done = bool(item.get("done", False))
                 elif current_date == today:
-                    done = get_daily_completion(data, get_daily_item_identifier(item, current_date))
+                    item_identifier = get_daily_item_identifier(item, current_date)
+                    done = get_daily_completion(data, item_identifier)
                 else:
                     done = False
-                render_item_card(item["title"], format_time_range(item), item.get("color"), done=done)
+
+                render_item_card(
+                    item["title"],
+                    format_time_range(item),
+                    item.get("color"),
+                    done=done,
+                )
+
+            due_tasks = [
+                task
+                for task in tasks
+                if parse_date(task.get("due")) == current_date
+            ]
+
             if due_tasks:
                 st.caption("Fällig")
+
             for task in due_tasks:
-                render_item_card(f"📌 {get_task_title(task)}", "Auftrag fällig", get_task_color(task), done=bool(task.get("done", False)))
+                render_item_card(
+                    f"📌 {get_task_title(task)}",
+                    "Auftrag fällig",
+                    get_task_color(task),
+                    done=bool(task.get("done", False)),
+                )
 
 
-def render_selected_day(data, selected_date, exams, tasks, chores, study_plans, task_plans) -> None:
-    render_section_title(f"{WEEKDAYS[selected_date.weekday()]}, {format_date(selected_date)}")
-    items = get_day_items(selected_date, exams, tasks, chores, study_plans, task_plans)
-    due_tasks = [task for task in tasks if parse_date(task.get("due")) == selected_date]
+def render_selected_day(
+    data,
+    selected_date,
+    exams,
+    tasks,
+    chores,
+    study_plans,
+    task_plans,
+) -> None:
+    """Zeigt den ausgewählten Kalendertag wie Übersicht -> Heute."""
+    render_section_title(
+        f"{WEEKDAYS[selected_date.weekday()]}, {format_date(selected_date)}"
+    )
+
+    items = get_day_items(
+        selected_date,
+        exams,
+        tasks,
+        chores,
+        study_plans,
+        task_plans,
+    )
+
+    due_tasks = [
+        task
+        for task in tasks
+        if parse_date(task.get("due")) == selected_date
+    ]
+
     if not items and not due_tasks:
         st.info("Für diesen Tag ist nichts geplant.")
         return
+
     shown_due_task_ids = set()
+
     for index, item in enumerate(items):
         col1, col2 = st.columns([0.05, 0.95])
         task = None
+
         if item.get("type") == "task":
             task_index = item.get("task_index")
             if isinstance(task_index, int) and 0 <= task_index < len(tasks):
                 task = tasks[task_index]
+
         with col1:
             if task is not None:
-                checked = render_task_checkbox(task, f"month_plan_{iso(selected_date)}")
+                checked = render_task_checkbox(
+                    task,
+                    f"month_task_done_{iso(selected_date)}",
+                )
                 if parse_date(task.get("due")) == selected_date:
                     shown_due_task_ids.add(get_task_identifier(task))
             elif item.get("type") == "chore" and selected_date != date.today():
-                checked = get_daily_completion(data, get_daily_item_identifier(item, selected_date))
+                checked = get_daily_completion(
+                    data,
+                    get_daily_item_identifier(item, selected_date),
+                )
                 st.checkbox(
-                    "", value=checked,
+                    "",
+                    value=checked,
                     key=f"month_readonly_{iso(selected_date)}_{index}",
                     disabled=True,
                     help="Ämtli können nur am heutigen Tag abgehakt werden.",
                 )
             else:
                 checked = render_daily_checkbox(data, item, selected_date, "month")
+
         with col2:
-            render_item_card(item["title"], format_time_range(item), item.get("color"), done=checked)
-    remaining_due_tasks = [task for task in due_tasks if get_task_identifier(task) not in shown_due_task_ids]
+            render_item_card(
+                item["title"],
+                format_time_range(item),
+                item.get("color"),
+                done=checked,
+            )
+
+    remaining_due_tasks = [
+        task
+        for task in due_tasks
+        if get_task_identifier(task) not in shown_due_task_ids
+    ]
+
     if remaining_due_tasks:
         st.caption("An diesem Tag fällig")
+
     for task in remaining_due_tasks:
         col1, col2 = st.columns([0.05, 0.95])
         with col1:
-            checked = render_task_checkbox(task, f"month_due_{iso(selected_date)}")
+            checked = render_task_checkbox(
+                task,
+                f"month_due_done_{iso(selected_date)}",
+            )
         with col2:
-            render_item_card(f"📌 {get_task_title(task)}", "Auftrag fällig", get_task_color(task), done=checked)
+            render_item_card(
+                f"📌 {get_task_title(task)}",
+                "Auftrag fällig",
+                get_task_color(task),
+                done=checked,
+            )
 
 
-def render_month(data, exams, tasks, chores, study_plans, task_plans) -> None:
+def render_month(
+    data,
+    exams,
+    tasks,
+    chores,
+    study_plans,
+    task_plans,
+) -> None:
+    """Monatskalender mit auswählbarem Tag und Tagesdetailansicht."""
     st.session_state.setdefault("month_offset", 0)
     st.session_state.setdefault("selected_calendar_date", iso(date.today()))
+
     today = date.today()
-    month_index = today.year * 12 + today.month - 1 + st.session_state.month_offset
+    month_index = (
+        today.year * 12
+        + today.month
+        - 1
+        + st.session_state.month_offset
+    )
     year = month_index // 12
     month = month_index % 12 + 1
+
     col1, col2, col3 = st.columns([1, 2, 1])
+
     with col1:
         if st.button("← Vorheriger Monat", key="previous_month"):
             st.session_state.month_offset -= 1
             st.rerun()
+
     with col2:
-        render_centered_heading(f"{MONTH_NAMES[month - 1]} {year}", size="1.35rem")
+        render_centered_heading(
+            f"{MONTH_NAMES[month - 1]} {year}",
+            size="1.35rem",
+        )
+
     with col3:
         if st.button("Nächster Monat →", key="next_month"):
             st.session_state.month_offset += 1
             st.rerun()
+
     if st.button("Heute", key="today_month"):
         st.session_state.month_offset = 0
         st.session_state.selected_calendar_date = iso(today)
         st.rerun()
+
     weekday_columns = st.columns(7)
     for index, weekday in enumerate(WEEKDAYS):
         with weekday_columns[index]:
             st.markdown(
-                f"<div style='text-align:center;color:#5B6472;font-family:monospace;font-weight:600'>{weekday}</div>",
+                f"<div style='text-align:center;color:#5B6472;"
+                f"font-family:monospace;font-weight:600'>{weekday}</div>",
                 unsafe_allow_html=True,
             )
+
     weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
+
     for week_index, week in enumerate(weeks):
         day_columns = st.columns(7)
+
         for day_index, current_date in enumerate(week):
             with day_columns[day_index]:
                 outside = current_date.month != month
-                selected = st.session_state.selected_calendar_date == iso(current_date)
-                exam_count = sum(1 for exam in exams if exam.get("date") == iso(current_date))
-                task_count = sum(1 for task in tasks if task.get("due") == iso(current_date))
-                chore_count = sum(1 for chore in chores if is_chore_active(chore, current_date))
-                indicators = ("🔴" if exam_count else "") + ("🟡" if task_count else "") + ("🟢" if chore_count else "")
-                label = str(current_date.day) + (f"\n{indicators}" if indicators else "")
+                selected = (
+                    st.session_state.selected_calendar_date
+                    == iso(current_date)
+                )
+
+                exam_count = sum(
+                    1 for exam in exams
+                    if exam.get("date") == iso(current_date)
+                )
+                task_count = sum(
+                    1 for task in tasks
+                    if task.get("due") == iso(current_date)
+                )
+                chore_count = sum(
+                    1 for chore in chores
+                    if is_chore_active(chore, current_date)
+                )
+
+                indicators = ""
+                if exam_count:
+                    indicators += "🔴"
+                if task_count:
+                    indicators += "🟡"
+                if chore_count:
+                    indicators += "🟢"
+
+                label = f"{current_date.day}"
+                if indicators:
+                    label += f"\n{indicators}"
+
+                button_type = "primary" if selected else "secondary"
+
                 if st.button(
                     label,
-                    key=f"calendar_day_{iso(current_date)}_{week_index}_{day_index}",
+                    key=f"calendar_day_{iso(current_date)}_{week_index}",
                     use_container_width=True,
-                    type="primary" if selected else "secondary",
+                    type=button_type,
                     disabled=outside,
                 ):
                     st.session_state.selected_calendar_date = iso(current_date)
                     st.rerun()
-    selected_date = parse_date(st.session_state.selected_calendar_date) or today
+
+    selected_date = parse_date(
+        st.session_state.selected_calendar_date
+    ) or today
+
     if selected_date.year == year and selected_date.month == month:
-        render_selected_day(data, selected_date, exams, tasks, chores, study_plans, task_plans)
+        render_selected_day(
+            data,
+            selected_date,
+            exams,
+            tasks,
+            chores,
+            study_plans,
+            task_plans,
+        )
     else:
         st.info("Wähle einen Tag im angezeigten Monat aus.")
 
