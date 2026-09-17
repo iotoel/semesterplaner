@@ -573,78 +573,226 @@ def render_week(data, exams, tasks, chores, study_plans, task_plans) -> None:
                 )
 
 
-def render_month(exams, tasks, chores) -> None:
+def render_selected_day(
+    data,
+    selected_date,
+    exams,
+    tasks,
+    chores,
+    study_plans,
+    task_plans,
+) -> None:
+    """Zeigt den ausgewählten Kalendertag wie Übersicht -> Heute."""
+    render_section_title(
+        f"{WEEKDAYS[selected_date.weekday()]}, {format_date(selected_date)}"
+    )
+
+    items = get_day_items(
+        selected_date,
+        exams,
+        tasks,
+        chores,
+        study_plans,
+        task_plans,
+    )
+
+    due_tasks = [
+        task
+        for task in tasks
+        if parse_date(task.get("due")) == selected_date
+    ]
+
+    if not items and not due_tasks:
+        st.info("Für diesen Tag ist nichts geplant.")
+        return
+
+    shown_due_task_ids = set()
+
+    for index, item in enumerate(items):
+        col1, col2 = st.columns([0.05, 0.95])
+        task = None
+
+        if item.get("type") == "task":
+            task_index = item.get("task_index")
+            if isinstance(task_index, int) and 0 <= task_index < len(tasks):
+                task = tasks[task_index]
+
+        with col1:
+            if task is not None:
+                checked = render_task_checkbox(
+                    task,
+                    f"month_task_done_{iso(selected_date)}",
+                )
+                if parse_date(task.get("due")) == selected_date:
+                    shown_due_task_ids.add(get_task_identifier(task))
+            elif item.get("type") == "chore" and selected_date != date.today():
+                checked = get_daily_completion(
+                    data,
+                    get_daily_item_identifier(item, selected_date),
+                )
+                st.checkbox(
+                    "",
+                    value=checked,
+                    key=f"month_readonly_{iso(selected_date)}_{index}",
+                    disabled=True,
+                    help="Ämtli können nur am heutigen Tag abgehakt werden.",
+                )
+            else:
+                checked = render_daily_checkbox(data, item, selected_date)
+
+        with col2:
+            render_item_card(
+                item["title"],
+                format_time_range(item),
+                item.get("color"),
+                done=checked,
+            )
+
+    remaining_due_tasks = [
+        task
+        for task in due_tasks
+        if get_task_identifier(task) not in shown_due_task_ids
+    ]
+
+    if remaining_due_tasks:
+        st.caption("An diesem Tag fällig")
+
+    for task in remaining_due_tasks:
+        col1, col2 = st.columns([0.05, 0.95])
+        with col1:
+            checked = render_task_checkbox(
+                task,
+                f"month_due_done_{iso(selected_date)}",
+            )
+        with col2:
+            render_item_card(
+                f"📌 {get_task_title(task)}",
+                "Auftrag fällig",
+                get_task_color(task),
+                done=checked,
+            )
+
+
+def render_month(
+    data,
+    exams,
+    tasks,
+    chores,
+    study_plans,
+    task_plans,
+) -> None:
+    """Monatskalender mit auswählbarem Tag und Tagesdetailansicht."""
     st.session_state.setdefault("month_offset", 0)
+    st.session_state.setdefault("selected_calendar_date", iso(date.today()))
+
     today = date.today()
-    month_index = today.year * 12 + today.month - 1 + st.session_state.month_offset
-    year, month = month_index // 12, month_index % 12 + 1
+    month_index = (
+        today.year * 12
+        + today.month
+        - 1
+        + st.session_state.month_offset
+    )
+    year = month_index // 12
+    month = month_index % 12 + 1
+
     col1, col2, col3 = st.columns([1, 2, 1])
+
     with col1:
         if st.button("← Vorheriger Monat", key="previous_month"):
             st.session_state.month_offset -= 1
             st.rerun()
+
     with col2:
-        render_centered_heading(f"{MONTH_NAMES[month - 1]} {year}", size="1.35rem")
+        render_centered_heading(
+            f"{MONTH_NAMES[month - 1]} {year}",
+            size="1.35rem",
+        )
+
     with col3:
         if st.button("Nächster Monat →", key="next_month"):
             st.session_state.month_offset += 1
             st.rerun()
+
     if st.button("Heute", key="today_month"):
         st.session_state.month_offset = 0
+        st.session_state.selected_calendar_date = iso(today)
         st.rerun()
+
+    weekday_columns = st.columns(7)
+    for index, weekday in enumerate(WEEKDAYS):
+        with weekday_columns[index]:
+            st.markdown(
+                f"<div style='text-align:center;color:#5B6472;"
+                f"font-family:monospace;font-weight:600'>{weekday}</div>",
+                unsafe_allow_html=True,
+            )
+
     weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
-    style = """
-    *{box-sizing:border-box}body{margin:0;padding:0;background:#EEF1EC;font-family:Arial,sans-serif}
-    .calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;width:100%}
-    .weekday{text-align:center;color:#5B6472;font-family:monospace;font-size:13px;font-weight:500;padding:7px 4px}
-    .calendar-cell{min-height:145px;background:#FFF;border:1px solid #DADFD6;border-radius:10px;padding:10px;position:relative}
-    .calendar-cell.today{background:#FBF5DF;border:2px solid #C9A227}.calendar-cell.outside{background:#F4F5F2;opacity:.45}
-    .day-number{color:#1C2430;font-family:monospace;font-size:14px;font-weight:500;margin-bottom:7px}
-    .month-items{display:flex;flex-direction:column;gap:4px;padding-bottom:18px}
-    .month-task{font-size:11px;line-height:1.2;padding:3px 5px;border-left:4px solid #C9A227;background:#FBF5DF;border-radius:4px;color:#1C2430;overflow-wrap:anywhere}
-    .month-task.done{text-decoration:line-through;opacity:.55}
-    .dots{position:absolute;left:10px;bottom:10px;display:flex;gap:6px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%}
-    .dot-red{background:#C94C4C}.dot-gold{background:#C9A227}.dot-teal{background:#3D8B87}
-    """
-    cells = "".join(f'<div class="weekday">{weekday}</div>' for weekday in WEEKDAYS)
-    for week in weeks:
-        for current_date in week:
-            classes = ["calendar-cell"]
-            if current_date.month != month:
-                classes.append("outside")
-            if current_date == today:
-                classes.append("today")
-            current_iso = iso(current_date)
-            dots = ""
-            if any(exam.get("date") == current_iso for exam in exams):
-                dots += '<span class="dot dot-red"></span>'
-            if any(task.get("due") == current_iso for task in tasks):
-                dots += '<span class="dot dot-gold"></span>'
-            if any(is_chore_active(chore, current_date) for chore in chores):
-                dots += '<span class="dot dot-teal"></span>'
 
-            due_tasks = [
-                task
-                for task in tasks
-                if task.get("due") == current_iso
-            ]
+    for week_index, week in enumerate(weeks):
+        day_columns = st.columns(7)
 
-            task_entries = "".join(
-                f'<div class="month-task{" done" if task.get("done", False) else ""}">'
-                f'{escape_html(get_task_title(task))}'
-                f'</div>'
-                for task in due_tasks
-            )
+        for day_index, current_date in enumerate(week):
+            with day_columns[day_index]:
+                outside = current_date.month != month
+                selected = (
+                    st.session_state.selected_calendar_date
+                    == iso(current_date)
+                )
 
-            cells += (
-                f'<div class="{" ".join(classes)}">'
-                f'<div class="day-number">{current_date.day}</div>'
-                f'<div class="month-items">{task_entries}</div>'
-                f'<div class="dots">{dots}</div>'
-                f'</div>'
-            )
-    html = f'<!DOCTYPE html><html><head><style>{style}</style></head><body><div class="calendar">{cells}</div></body></html>'
-    components.html(html, height=(len(weeks) + 1) * 150 + 20, scrolling=False)
+                exam_count = sum(
+                    1 for exam in exams
+                    if exam.get("date") == iso(current_date)
+                )
+                task_count = sum(
+                    1 for task in tasks
+                    if task.get("due") == iso(current_date)
+                )
+                chore_count = sum(
+                    1 for chore in chores
+                    if is_chore_active(chore, current_date)
+                )
+
+                indicators = ""
+                if exam_count:
+                    indicators += "🔴"
+                if task_count:
+                    indicators += "🟡"
+                if chore_count:
+                    indicators += "🟢"
+
+                label = f"{current_date.day}"
+                if indicators:
+                    label += f"\n{indicators}"
+
+                button_type = "primary" if selected else "secondary"
+
+                if st.button(
+                    label,
+                    key=f"calendar_day_{iso(current_date)}_{week_index}",
+                    use_container_width=True,
+                    type=button_type,
+                    disabled=outside,
+                ):
+                    st.session_state.selected_calendar_date = iso(current_date)
+                    st.rerun()
+
+    selected_date = parse_date(
+        st.session_state.selected_calendar_date
+    ) or today
+
+    if selected_date.year == year and selected_date.month == month:
+        render_selected_day(
+            data,
+            selected_date,
+            exams,
+            tasks,
+            chores,
+            study_plans,
+            task_plans,
+        )
+    else:
+        st.info("Wähle einen Tag im angezeigten Monat aus.")
 
 
 def main() -> None:
@@ -675,7 +823,7 @@ def main() -> None:
     with tab_week:
         render_week(data, exams, tasks, chores, study_plans, task_plans)
     with tab_month:
-        render_month(exams, tasks, chores)
+        render_month(data, exams, tasks, chores, study_plans, task_plans)
 
 
 if __name__ == "__main__":
