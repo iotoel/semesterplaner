@@ -1,386 +1,113 @@
-# ============================================================
-# Semesterplaner
-# ============================================================
-"""
-Streamlit-App, die Prüfungen, Aufträge und Ämtli aus einer JSON-Datei
-in einem privaten GitHub-Repository lädt und daraus automatisch einen
-Tages-, Wochen- und Monatsplan erstellt.
-
-Wichtiger Hinweis zur Struktur:
-Alle HTML-Ausgaben laufen über render_html().
-Diese Funktion entfernt führende Leerzeichen aus jeder Zeile,
-bevor der Text an st.markdown() übergeben wird.
-Grund: Streamlits Markdown-Parser interpretiert Zeilen mit vier
-oder mehr führenden Leerzeichen als Codeblock.
-Mehrzeilige, eingerückte f-Strings mit HTML wurden dadurch als
-reiner Text (mit sichtbaren <div>-Tags) statt als gerendertes HTML
-angezeigt.
-"""
-
 from __future__ import annotations
 
 import base64
 import calendar
+import hashlib
 import json
 from datetime import date, datetime, timedelta
+from html import escape
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
+st.set_page_config(page_title="Semesterplaner", page_icon="🗓️", layout="wide", initial_sidebar_state="collapsed")
 
-# ============================================================
-# KONFIGURATION
-# ============================================================
-
-st.set_page_config(
-    page_title="Semesterplaner",
-    page_icon="🗓️",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-
-# ============================================================
-# FARBEN
-# ============================================================
-
-# Grundfarben für Planungstypen
-# Diese Farben werden in der MONATSANSICHT verwendet.
-COLOR_EXAM = (201, 76, 76)       # Prüfungen
-COLOR_TASK = (201, 162, 39)      # Aufträge
-COLOR_CHORE = (61, 139, 135)     # Ämtli
-
-
-# Farben für einzelne Fächer
-# Diese Farben werden in der WOCHENANSICHT und ÜBERSICHT verwendet.
+COLOR_EXAM = (201, 76, 76)
+COLOR_TASK = (201, 162, 39)
+COLOR_CHORE = (61, 139, 135)
+COLOR_SUBJECT_DEFAULT = (0, 255, 255)
 SUBJECT_COLORS = {
-    "Mathematik": (52, 152, 219),
-    "Deutsch": (155, 89, 182),
-    "Englisch": (46, 204, 113),
-    "Französisch": (241, 196, 15),
-    "Geschichte": (230, 126, 34),
-    "Geografie": (26, 188, 156),
-    "Physik": (231, 76, 60),
-    "Chemie": (52, 73, 94),
-    "Biologie": (39, 174, 96),
-    "Informatik": (127, 140, 141),
+    "Mathematik": (52, 152, 219), "Deutsch": (155, 89, 182),
+    "Englisch": (46, 204, 113), "Französisch": (241, 196, 15),
+    "Geschichte": (230, 126, 34), "Geografie": (26, 188, 156),
+    "Physik": (231, 76, 60), "Chemie": (52, 73, 94),
+    "Biologie": (39, 174, 96), "Informatik": (127, 140, 141),
     "Latein": (0, 255, 255),
 }
-
-
-# Fallback, falls ein Fach nicht in SUBJECT_COLORS vorhanden ist
-COLOR_SUBJECT_DEFAULT = (0, 255, 255)
-
-
 WEEKDAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-
-MONTH_NAMES = [
-    "Januar",
-    "Februar",
-    "März",
-    "April",
-    "Mai",
-    "Juni",
-    "Juli",
-    "August",
-    "September",
-    "Oktober",
-    "November",
-    "Dezember",
-]
-
+MONTH_NAMES = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"]
 GAP_MINUTES = 10
 MAX_STUDY_DAYS = 10
 MAX_MINUTES_PER_DAY = 45
-
-
-# Arbeitszeiten je Wochentag
-# 0 = Montag ... 6 = Sonntag
 WORK_HOURS = {
-    0: [("13:00", "20:00")],                       # Montag
-    1: [("13:00", "20:00")],                       # Dienstag
-    2: [("13:00", "14:00"), ("18:00", "20:00")],   # Mittwoch
-    3: [("16:30", "20:00")],                       # Donnerstag
-    4: [("17:00", "20:00")],                       # Freitag
-    5: [("08:00", "20:00")],                       # Samstag
-    6: [],                                          # Sonntag
+    0: [("13:00", "20:00")], 1: [("13:00", "20:00")],
+    2: [("13:00", "14:00"), ("18:00", "20:00")],
+    3: [("16:30", "20:00")], 4: [("17:00", "20:00")],
+    5: [("08:00", "20:00")], 6: [],
 }
 
 
-# ============================================================
-# HTML-RENDERING
-# ============================================================
-
 def render_html(html: str) -> None:
-    """
-    Rendert HTML über st.markdown, ohne dass Einrückungen als
-    Markdown-Codeblock interpretiert werden.
-
-    Jede Zeile wird getrimmt, bevor sie an st.markdown() geht.
-    Das ist sicher, weil HTML- und CSS-Syntax nicht von
-    führenden Leerzeichen abhängt.
-    """
-    cleaned = "\n".join(
-        line.strip()
-        for line in html.strip().splitlines()
-    )
+    cleaned = "\n".join(line.strip() for line in html.strip().splitlines())
     st.markdown(cleaned, unsafe_allow_html=True)
 
 
+def escape_html(value) -> str:
+    return escape(str(value), quote=True) if value is not None else ""
+
+
 def render_section_title(title: str) -> None:
-    render_html(
-        f'<div class="section-title">{escape_html(title)}</div>'
-    )
+    render_html(f'<div class="section-title">{escape_html(title)}</div>')
 
 
-def render_centered_heading(
-    text: str,
-    size: str = "1.3rem",
-) -> None:
+def render_centered_heading(text: str, size: str = "1.3rem") -> None:
     render_html(
-        f'<div style="text-align:center;'
-        f'font-family:\'Libre Baskerville\',serif;'
-        f'font-size:{size};'
-        f'font-weight:700;'
-        f'color:var(--ink);'
-        f'padding-top:.35rem;">'
+        f'<div style="text-align:center;font-family:\'Libre Baskerville\',serif;'
+        f'font-size:{size};font-weight:700;color:var(--ink);padding-top:.35rem;">'
         f'{escape_html(text)}</div>'
     )
 
 
-# ============================================================
-# FARB-HILFSFUNKTIONEN
-# ============================================================
-
 def rgb_to_css(color: tuple[int, int, int]) -> str:
-    """Wandelt ein RGB-Tupel in eine CSS-rgb()-Farbe um."""
     return f"rgb({color[0]}, {color[1]}, {color[2]})"
 
 
-def get_subject_color(
-    text: str | None,
-) -> tuple[int, int, int]:
-    """
-    Sucht in einem beliebigen Text nach einem bekannten Fach.
-
-    Dadurch funktioniert es z. B. für:
-        Mathematik
-        Mathematik – Ableitungen
-        Prüfung Mathematik
-        Lernen: Mathematik – Ableitungen
-
-    Wenn kein Fach gefunden wird, wird die Fallback-Farbe verwendet.
-    """
-    text = str(text or "").strip()
-
+def get_subject_color(text: str | None) -> tuple[int, int, int]:
+    text = str(text or "")
     for subject, color in SUBJECT_COLORS.items():
         if subject.lower() in text.lower():
             return color
-
     return COLOR_SUBJECT_DEFAULT
 
 
 def get_exam_color(exam: dict) -> tuple[int, int, int]:
-    """
-    Prüfungen bekommen in Woche und Übersicht
-    die Farbe des Fachs.
-    """
-    return get_subject_color(
-        exam.get("subject")
-        or exam.get("title")
-    )
+    return get_subject_color(exam.get("subject") or exam.get("title"))
 
 
 def get_task_color(task: dict) -> tuple[int, int, int]:
-    """
-    Aufträge bekommen in Woche und Übersicht
-    die Farbe des Fachs.
-
-    Es wird zuerst nach einem separaten Fachfeld gesucht.
-    Falls keines vorhanden ist, wird der komplette Auftragstitel
-    nach einem bekannten Fach durchsucht.
-    """
-    text = " ".join(
-        str(value)
-        for value in [
-            task.get("subject"),
-            task.get("fach"),
-            task.get("title"),
-        ]
-        if value
-    )
-
+    text = " ".join(str(v) for v in (task.get("subject"), task.get("fach"), task.get("title")) if v)
     return get_subject_color(text)
 
 
-# ============================================================
-# ITEM-KARTE
-# ============================================================
+def render_item_card(title: str, meta: str = "", color: tuple[int, int, int] | None = None, done: bool = False) -> None:
+    meta_html = f'<div class="item-meta">{escape_html(meta)}</div>' if meta else ""
+    title_style = ' style="text-decoration:line-through;opacity:.55;"' if done else ""
+    color_style = f' style="border-left:5px solid {rgb_to_css(color)};"' if color else ""
+    render_html(f'<div class="item-card"{color_style}><div class="item-title"{title_style}>{escape_html(title)}</div>{meta_html}</div>')
 
-def render_item_card(
-    title: str,
-    meta: str = "",
-    color: tuple[int, int, int] | None = None,
-    done: bool = False,
-) -> None:
-    """
-    Rendert eine Karte.
-
-    Wenn color gesetzt ist, erhält die Karte links
-    einen farbigen Balken.
-    """
-    meta_html = (
-        f'<div class="item-meta">{escape_html(meta)}</div>'
-        if meta
-        else ""
-    )
-
-    title_style = ""
-    if done:
-        title_style = (
-            ' style="text-decoration: line-through; '
-            'opacity: 0.55;"'
-        )
-
-    color_style = ""
-
-    if color:
-        color_style = (
-            f' style="border-left: 5px solid '
-            f'{rgb_to_css(color)};"'
-        )
-
-    render_html(
-        f'<div class="item-card"{color_style}>'
-        f'<div class="item-title"{title_style}>'
-        f'{escape_html(title)}'
-        f'</div>'
-        f'{meta_html}'
-        f'</div>'
-    )
-
-
-# ============================================================
-# CSS
-# ============================================================
 
 def inject_css() -> None:
-    render_html(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+    render_html("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+    :root{--bg:#EEF1EC;--ink:#1C2430;--muted:#5B6472;--border:#DADFD6;--white:#FFF}
+    html{color-scheme:light!important}body,[data-testid="stAppViewContainer"],[data-testid="stAppViewContainer"]>.main{background:var(--bg)!important;color:var(--ink)!important}
+    [data-testid="stHeader"],[data-testid="stToolbar"]{display:none}#MainMenu,footer{visibility:hidden}
+    .block-container{max-width:1400px;padding-top:2rem;padding-bottom:3rem}
+    h1,h2,h3{color:var(--ink);font-family:"Libre Baskerville",serif}
+    .section-title{color:var(--ink);font-family:"Libre Baskerville",serif;font-size:1.3rem;font-weight:700;margin:1.2rem 0 .8rem}
+    .item-card{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;margin-bottom:.5rem}
+    .item-title{color:var(--ink);font-size:1rem;font-weight:600}.item-meta{color:var(--muted);font-size:.85rem;margin-top:.15rem}
+    </style>
+    """)
 
-        :root {
-            --bg: #EEF1EC;
-            --ink: #1C2430;
-            --muted: #5B6472;
-            --border: #DADFD6;
-            --white: #FFFFFF;
-
-            --red: #C94C4C;
-            --gold: #C9A227;
-            --teal: #3D8B87;
-
-            --red-bg: #F8EAEA;
-            --gold-bg: #FBF5DF;
-            --teal-bg: #E8F3F1;
-        }
-
-        html {
-            color-scheme: light !important;
-        }
-
-        body {
-            background: var(--bg) !important;
-            color: var(--ink) !important;
-        }
-
-        [data-testid="stAppViewContainer"],
-        [data-testid="stAppViewContainer"] > .main {
-            background: var(--bg) !important;
-            color: var(--ink) !important;
-        }
-
-        html,
-        body,
-        [data-testid="stAppViewContainer"] {
-            background: var(--bg);
-        }
-
-        [data-testid="stHeader"],
-        [data-testid="stToolbar"] {
-            display: none;
-        }
-
-        #MainMenu {
-            visibility: hidden;
-        }
-
-        footer {
-            visibility: hidden;
-        }
-
-        .block-container {
-            max-width: 1400px;
-            padding-top: 2rem;
-            padding-bottom: 3rem;
-        }
-
-        h1,
-        h2,
-        h3 {
-            color: var(--ink);
-            font-family: "Libre Baskerville", serif;
-        }
-
-        .section-title {
-            color: var(--ink);
-            font-family: "Libre Baskerville", serif;
-            font-size: 1.3rem;
-            font-weight: 700;
-            margin-top: 1.2rem;
-            margin-bottom: 0.8rem;
-        }
-
-        .item-card {
-            background: var(--white);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 0.75rem 1rem;
-            margin-bottom: 0.5rem;
-        }
-
-        .item-title {
-            color: var(--ink);
-            font-size: 1rem;
-            font-weight: 600;
-        }
-
-        .item-meta {
-            color: var(--muted);
-            font-size: 0.85rem;
-            margin-top: 0.15rem;
-        }
-        </style>
-        """
-    )
-
-
-# ============================================================
-# ALLGEMEINE HILFSFUNKTIONEN
-# ============================================================
 
 def parse_date(value) -> date | None:
-    """YYYY-MM-DD -> date"""
     if not value:
         return None
-
     try:
-        return datetime.strptime(
-            str(value),
-            "%Y-%m-%d",
-        ).date()
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
     except ValueError:
         return None
 
@@ -401,37 +128,16 @@ def parse_time(value: str):
     return datetime.strptime(value, "%H:%M").time()
 
 
-def minutes_between(
-    start: datetime,
-    end: datetime,
-) -> int:
-    return int(
-        (end - start).total_seconds() / 60
-    )
+def minutes_between(start: datetime, end: datetime) -> int:
+    return int((end - start).total_seconds() / 60)
 
 
 def get_exam_title(exam: dict) -> str:
-    """
-    Prüfungen tragen Fach + Thema im Feld
-    'subject' (nicht 'title').
-    """
-    return (
-        exam.get("subject")
-        or exam.get("title")
-        or "Prüfung"
-    )
+    return exam.get("subject") or exam.get("title") or "Prüfung"
 
 
 def get_exam_minutes(exam: dict) -> int:
-    """
-    Prüfungen geben die Lernzeit in 'hours' an.
-    'duration' (Minuten) wird nur als Fallback
-    für ältere Datensätze unterstützt.
-    """
-    if "hours" in exam:
-        return int(exam.get("hours", 0)) * 60
-
-    return int(exam.get("duration", 45))
+    return int(exam.get("hours", 0)) * 60 if "hours" in exam else int(exam.get("duration", 45))
 
 
 def get_task_title(task: dict) -> str:
@@ -439,1409 +145,485 @@ def get_task_title(task: dict) -> str:
 
 
 def get_task_minutes(task: dict) -> int:
-    """
-    Aufträge geben den Aufwand in 'hours' an.
-    'duration' (Minuten) wird nur als Fallback
-    für ältere Datensätze unterstützt.
-    """
-    if "hours" in task:
-        return int(task.get("hours", 0)) * 60
-
-    return int(task.get("duration", 45))
+    return int(task.get("hours", 0)) * 60 if "hours" in task else int(task.get("duration", 45))
 
 
-def escape_html(value) -> str:
-    """Verhindert, dass Benutzerdaten HTML kaputt machen."""
-    if value is None:
-        return ""
-
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#039;")
-    )
+def get_github_config() -> tuple[str, str, str, str]:
+    token = str(st.secrets.get("GITHUB_TOKEN", "")).strip()
+    repo = str(st.secrets.get("GITHUB_REPO", "")).strip()
+    file_path = str(st.secrets.get("GITHUB_FILE", "daten.json")).strip() or "daten.json"
+    branch = str(st.secrets.get("GITHUB_BRANCH", "main")).strip() or "main"
+    if not token:
+        raise RuntimeError("GITHUB_TOKEN fehlt in den Streamlit-Secrets.")
+    if not repo:
+        raise RuntimeError("GITHUB_REPO fehlt in den Streamlit-Secrets.")
+    return token, repo, file_path, branch
 
 
-# ============================================================
-# GITHUB
-# ============================================================
+def get_github_url(repo: str, file_path: str) -> str:
+    return f"https://api.github.com/repos/{repo}/contents/{file_path}"
+
+
+def get_github_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+
+def get_github_error_message(response: requests.Response, fallback: str) -> str:
+    try:
+        message = response.json().get("message")
+    except ValueError:
+        message = None
+    messages = {
+        401: "GitHub-Anmeldung fehlgeschlagen. GITHUB_TOKEN prüfen.",
+        403: "GitHub verweigert den Zugriff. Token-Berechtigung und Repository-Zugriff prüfen.",
+        404: "Repository, Branch oder daten.json wurde nicht gefunden.",
+        409: "GitHub-Konflikt beim Speichern. Die Datei wurde gleichzeitig geändert.",
+        422: "GitHub hat die Änderung abgelehnt. Branch, SHA und Dateipfad prüfen.",
+    }
+    return messages.get(response.status_code, f"{fallback} GitHub meldet: {message}" if message else f"{fallback} HTTP-Status {response.status_code}")
+
+
+def decode_github_content(payload: dict) -> dict:
+    content = payload.get("content")
+    if not content:
+        raise RuntimeError("GitHub hat keinen Dateiinhalt zurückgegeben.")
+    try:
+        data = json.loads(base64.b64decode(content.replace("\n", "")).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("daten.json konnte nicht gelesen werden.") from error
+    if not isinstance(data, dict):
+        raise RuntimeError("daten.json muss ein JSON-Objekt enthalten.")
+    for key in ("exams", "tasks", "chores"):
+        data.setdefault(key, [])
+    data.setdefault("completions", {})
+    return data
+
 
 @st.cache_data(ttl=60)
 def load_data() -> dict:
-    """Lädt daten.json aus dem privaten GitHub-Repository."""
-    token = st.secrets.get("GITHUB_TOKEN")
-    repo = st.secrets.get("GITHUB_REPO")
-    file_path = st.secrets.get(
-        "GITHUB_FILE",
-        "daten.json",
-    )
-    branch = st.secrets.get(
-        "GITHUB_BRANCH",
-        "main",
-    )
+    token, repo, file_path, branch = get_github_config()
+    response = requests.get(get_github_url(repo, file_path), headers=get_github_headers(token), params={"ref": branch}, timeout=20)
+    if not response.ok:
+        raise RuntimeError(get_github_error_message(response, "Daten konnten nicht geladen werden."))
+    return decode_github_content(response.json())
 
-    if not token:
-        raise RuntimeError(
-            "GITHUB_TOKEN fehlt in den Streamlit-Secrets."
-        )
 
-    if not repo:
-        raise RuntimeError(
-            "GITHUB_REPO fehlt in den Streamlit-Secrets."
-        )
-
-    url = (
-        f"https://api.github.com/repos/"
-        f"{repo}/contents/{file_path}"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.raw+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    response = requests.get(
-        url,
-        headers=headers,
-        params={"ref": branch},
-        timeout=20,
-    )
-    st.write("Status:", response.status_code)
-    st.write(response.text)
-    response.raise_for_status()
-
-    return response.json()
-
-def save_data(data: dict) -> None:
-    """Speichert daten.json zurück ins GitHub-Repository."""
-
-    token = st.secrets["GITHUB_TOKEN"]
-    repo = st.secrets["GITHUB_REPO"]
-    file_path = st.secrets.get(
-        "GITHUB_FILE",
-        "daten.json",
-    )
-    branch = st.secrets.get(
-        "GITHUB_BRANCH",
-        "main",
-    )
-
-    url = (
-        f"https://api.github.com/repos/"
-        f"{repo}/contents/{file_path}"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    # Aktuelle SHA holen
-    response = requests.get(
-        url,
-        headers=headers,
-        params={"ref": branch},
-        timeout=20,
-    )
-    st.write("Status:", response.status_code)
-    st.write(response.text)
-    response.raise_for_status()
-
-    current_sha = response.json()["sha"]
-
-    # Nur die eigentlichen Daten speichern
-    save_content = {
+def build_save_content(data: dict) -> dict:
+    return {
         "exams": data.get("exams", []),
         "tasks": data.get("tasks", []),
         "chores": data.get("chores", []),
+        "completions": data.get("completions", {}),
     }
 
-    encoded_content = base64.b64encode(
-        json.dumps(
-            save_content,
-            ensure_ascii=False,
-            indent=2,
-        ).encode("utf-8")
-    ).decode("ascii")
 
-    payload = {
-        "message": "Auftragsstatus aktualisiert",
-        "content": encoded_content,
-        "sha": current_sha,
-        "branch": branch,
+def save_data(data: dict, commit_message: str = "Auftragsstatus aktualisiert") -> None:
+    token, repo, file_path, branch = get_github_config()
+    url = get_github_url(repo, file_path)
+    headers = get_github_headers(token)
+    encoded = base64.b64encode(json.dumps(build_save_content(data), ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii")
+    for attempt in range(2):
+        metadata = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
+        if not metadata.ok:
+            raise RuntimeError(get_github_error_message(metadata, "Aktueller Dateistand konnte nicht gelesen werden."))
+        sha = metadata.json().get("sha")
+        if not sha:
+            raise RuntimeError("GitHub hat keinen SHA-Wert zurückgegeben.")
+        response = requests.put(url, headers=headers, json={"message": commit_message, "content": encoded, "sha": sha, "branch": branch}, timeout=20)
+        if response.status_code in (200, 201):
+            load_data.clear()
+            return
+        if response.status_code != 409 or attempt == 1:
+            raise RuntimeError(get_github_error_message(response, "Daten konnten nicht gespeichert werden."))
+
+
+def get_task_identifier(task: dict) -> str:
+    existing_id = str(task.get("id", "")).strip()
+    if existing_id:
+        return existing_id
+    identity = {key: task.get(key) for key in ("title", "subject", "fach", "due", "hours", "duration")}
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def update_task_done(data: dict, task_identifier: str, done: bool) -> None:
+    for task in data.get("tasks", []):
+        if get_task_identifier(task) == task_identifier:
+            task["done"] = bool(done)
+            return
+    raise RuntimeError("Der Auftrag wurde in daten.json nicht gefunden.")
+
+
+def sync_task_checkbox_keys(task_identifier: str, done: bool) -> None:
+    for prefix in ("task_done", "today_task_done"):
+        key = f"{prefix}_{task_identifier}"
+        if key in st.session_state:
+            st.session_state[key] = done
+
+
+def save_task_checkbox(task_identifier: str, checkbox_key: str) -> None:
+    checked = bool(st.session_state.get(checkbox_key, False))
+    try:
+        load_data.clear()
+        current_data = load_data()
+        update_task_done(current_data, task_identifier, checked)
+        save_data(current_data)
+        sync_task_checkbox_keys(task_identifier, checked)
+        st.session_state["save_success"] = "Auftrag wurde gespeichert."
+        st.session_state.pop("save_error", None)
+    except Exception as error:
+        st.session_state[checkbox_key] = not checked
+        st.session_state["save_error"] = str(error)
+
+
+def render_task_checkbox(task: dict, prefix: str) -> bool:
+    identifier = get_task_identifier(task)
+    key = f"{prefix}_{identifier}"
+    if key not in st.session_state:
+        st.session_state[key] = bool(task.get("done", False))
+    st.checkbox("", key=key, on_change=save_task_checkbox, args=(identifier, key))
+    return bool(st.session_state[key])
+
+
+
+def get_daily_item_identifier(item: dict, item_date: date) -> str:
+    """Erzeugt eine stabile Kennung für einen Tagesplaneintrag."""
+    identity = {
+        "date": iso(item_date),
+        "type": item.get("type"),
+        "title": item.get("title"),
+        "start": item.get("start").strftime("%H:%M") if item.get("start") else None,
+        "end": item.get("end").strftime("%H:%M") if item.get("end") else None,
     }
-
-    response = requests.put(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=20,
-    )
-    st.write("Status:", response.status_code)
-    st.write(response.text)
-    response.raise_for_status()
-
-    load_data.clear()
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{iso(item_date)}_{item.get('type', 'item')}_{digest}"
 
 
-# ============================================================
-# DATEN BEREINIGEN
-# ============================================================
+def get_daily_completion(data: dict, item_identifier: str) -> bool:
+    return bool(data.get("completions", {}).get(item_identifier, False))
+
+
+def save_daily_checkbox(item_identifier: str, checkbox_key: str) -> None:
+    """Speichert Lernen, Ämtli und weitere Tagespunkte datumsspezifisch."""
+    checked = bool(st.session_state.get(checkbox_key, False))
+    try:
+        load_data.clear()
+        current_data = load_data()
+        completions = current_data.setdefault("completions", {})
+        if checked:
+            completions[item_identifier] = True
+        else:
+            completions.pop(item_identifier, None)
+        save_data(current_data, commit_message="Tagesstatus aktualisiert")
+        st.session_state["save_success"] = "Status wurde gespeichert."
+        st.session_state.pop("save_error", None)
+    except Exception as error:
+        st.session_state[checkbox_key] = not checked
+        st.session_state["save_error"] = str(error)
+
+
+def render_daily_checkbox(data: dict, item: dict, item_date: date) -> bool:
+    identifier = get_daily_item_identifier(item, item_date)
+    key = f"daily_done_{identifier}"
+    if key not in st.session_state:
+        st.session_state[key] = get_daily_completion(data, identifier)
+    st.checkbox("", key=key, on_change=save_daily_checkbox, args=(identifier, key))
+    return bool(st.session_state[key])
+
 
 def prepare_data(data: dict):
-    """
-    Entfernt vergangene Prüfungen und Aufträge.
-    Ämtli bleiben aktiv, solange ihr Zeitraum noch läuft.
-    """
     today = date.today()
-
-    exams = [
-        exam
-        for exam in data.get("exams", [])
-        if (
-            d := parse_date(exam.get("date"))
-        )
-        and d >= today
-    ]
-
-    tasks = [
-        task
-        for task in data.get("tasks", [])
-        if (
-            d := parse_date(task.get("due"))
-        )
-        and d >= today
-    ]
-
+    exams = [exam for exam in data.get("exams", []) if (d := parse_date(exam.get("date"))) and d >= today]
+    tasks = [task for task in data.get("tasks", []) if (d := parse_date(task.get("due"))) and d >= today]
     chores = []
-
     for chore in data.get("chores", []):
-        start = parse_date(
-            chore.get("startDate")
-        )
-
-        if not start:
-            continue
-
-        end = parse_date(
-            chore.get("endDate")
-        )
-
-        if end and end < today:
-            continue
-
-        chores.append(chore)
-
+        start = parse_date(chore.get("startDate"))
+        end = parse_date(chore.get("endDate"))
+        if start and (not end or end >= today):
+            chores.append(chore)
     return exams, tasks, chores
 
 
-# ============================================================
-# ÄMTLI
-# ============================================================
-
-def is_chore_active(
-    chore: dict,
-    d: date,
-) -> bool:
-    """Prüft, ob ein Ämtli an diesem Datum aktiv ist."""
-    start = parse_date(
-        chore.get("startDate")
-    )
-
-    if not start:
+def is_chore_active(chore: dict, d: date) -> bool:
+    start = parse_date(chore.get("startDate"))
+    end = parse_date(chore.get("endDate"))
+    if not start or d < start or (end and d > end) or d.weekday() == 6:
         return False
-
-    end = parse_date(
-        chore.get("endDate")
-    )
-
-    if end and d > end:
-        return False
-
-    if d < start:
-        return False
-
-    if d.weekday() == 6:
-        # Sonntag = keine Ämtli
-        return False
-
-    # Unterstützt sowohl frequency: "recurring"
-    # als auch das ältere boolesche Feld "recurring".
-    is_recurring = (
-        chore.get("frequency") == "recurring"
-        or chore.get("recurring", False)
-    )
-
-    if not is_recurring:
+    recurring = chore.get("frequency") == "recurring" or chore.get("recurring", False)
+    if not recurring:
         return d == start
-
-    interval = int(
-        chore.get(
-            "interval",
-            chore.get("intervalDays", 1),
-        )
-    ) or 1
-
+    interval = int(chore.get("interval", chore.get("intervalDays", 1))) or 1
     return (d - start).days % interval == 0
 
 
-# ============================================================
-# LERN- UND AUFGABENPLAN
-# ============================================================
-
-def future_days_until(
-    end_date: date,
-    max_days: int = MAX_STUDY_DAYS,
-) -> list[date]:
-    """
-    Die nächsten maximal `max_days` Nicht-Sonntage
-    vor dem Enddatum.
-    """
-    today = date.today()
+def future_days_until(end_date: date, max_days: int = MAX_STUDY_DAYS) -> list[date]:
     result = []
-    current = today
-
-    while (
-        current < end_date
-        and len(result) < max_days
-    ):
+    current = date.today()
+    while current < end_date and len(result) < max_days:
         if current.weekday() != 6:
             result.append(current)
-
         current += timedelta(days=1)
-
     return result
 
 
-def distribute_minutes(
-    total_minutes: int,
-    days: list[date],
-    max_per_day: int = MAX_MINUTES_PER_DAY,
-) -> dict[date, int]:
-    """
-    Verteilt Lern-/Aufgabenzeit auf die verfügbaren Tage.
-    Es werden nur 15-Minuten-Einheiten verwendet.
-    """
+def distribute_minutes(total_minutes: int, days: list[date], max_per_day: int = MAX_MINUTES_PER_DAY) -> dict[date, int]:
     if total_minutes <= 0 or not days:
         return {}
-
-    total_minutes = (
-        total_minutes // 15
-    ) * 15
-
-    if total_minutes <= 0:
-        return {}
-
-    max_per_day = (
-        max_per_day // 15
-    ) * 15
-
-    result = {
-        d: 0
-        for d in days
-    }
-
+    total_minutes = (total_minutes // 15) * 15
+    max_per_day = (max_per_day // 15) * 15
+    result = {d: 0 for d in days}
     remaining = total_minutes
-
     while remaining >= 15:
         changed = False
-
         for d in days:
             if remaining < 15:
                 break
-
-            if result[d] >= max_per_day:
-                continue
-
-            result[d] += 15
-            remaining -= 15
-            changed = True
-
+            if result[d] < max_per_day:
+                result[d] += 15
+                remaining -= 15
+                changed = True
         if not changed:
             break
-
     return result
 
 
-def build_study_plan(
-    exam: dict,
-) -> dict[date, int]:
-    """Erstellt einmalig den Lernplan für eine Prüfung."""
-    exam_date = parse_date(
-        exam.get("date")
-    )
-
-    if not exam_date:
-        return {}
-
-    total_minutes = get_exam_minutes(exam)
-
-    days = future_days_until(
-        exam_date,
-        max_days=MAX_STUDY_DAYS,
-    )
-
-    return distribute_minutes(
-        total_minutes,
-        days,
-    )
+def build_study_plan(exam: dict) -> dict[date, int]:
+    exam_date = parse_date(exam.get("date"))
+    return distribute_minutes(get_exam_minutes(exam), future_days_until(exam_date)) if exam_date else {}
 
 
-def build_task_plan(
-    task: dict,
-) -> dict[date, int]:
-    """Erstellt einmalig den Arbeitsplan für einen Auftrag."""
-    due_date = parse_date(
-        task.get("due")
-    )
-
-    if not due_date:
-        return {}
-
-    total_minutes = get_task_minutes(task)
-
-    days = future_days_until(
-        due_date,
-        max_days=MAX_STUDY_DAYS,
-    )
-
-    return distribute_minutes(
-        total_minutes,
-        days,
-    )
+def build_task_plan(task: dict) -> dict[date, int]:
+    due_date = parse_date(task.get("due"))
+    return distribute_minutes(get_task_minutes(task), future_days_until(due_date)) if due_date else {}
 
 
-def build_all_plans(
-    exams: list[dict],
-    tasks: list[dict],
-):
-    """
-    Berechnet sämtliche Lern- und Aufgabenpläne genau einmal.
-    Die Elemente werden per Index referenziert.
-    """
-    study_plans = {
-        i: build_study_plan(exam)
-        for i, exam in enumerate(exams)
-    }
-
-    task_plans = {
-        i: build_task_plan(task)
-        for i, task in enumerate(tasks)
-    }
-
-    return study_plans, task_plans
+def build_all_plans(exams: list[dict], tasks: list[dict]):
+    return ({i: build_study_plan(exam) for i, exam in enumerate(exams)}, {i: build_task_plan(task) for i, task in enumerate(tasks)})
 
 
-# ============================================================
-# ZEITSLOTS
-# ============================================================
-
-def get_work_slots(
-    d: date,
-) -> list[tuple[datetime, datetime]]:
-    """Gibt die verfügbaren Arbeitszeiten des Tages zurück."""
-    result = []
-
-    for start_text, end_text in WORK_HOURS.get(
-        d.weekday(),
-        [],
-    ):
-        start = datetime.combine(
-            d,
-            parse_time(start_text),
-        )
-
-        end = datetime.combine(
-            d,
-            parse_time(end_text),
-        )
-
-        result.append(
-            (start, end)
-        )
-
-    return result
+def get_work_slots(d: date) -> list[tuple[datetime, datetime]]:
+    return [(datetime.combine(d, parse_time(start)), datetime.combine(d, parse_time(end))) for start, end in WORK_HOURS.get(d.weekday(), [])]
 
 
-def find_free_slot(
-    d: date,
-    busy: list[tuple[datetime, datetime]],
-    duration: int,
-):
-    """
-    Sucht einen freien Zeitraum.
-    Der GAP_MINUTES-Puffer wird nur zwischen
-    bereits geplanten Aktivitäten berücksichtigt.
-    """
+def find_free_slot(d: date, busy: list[tuple[datetime, datetime]], duration: int):
     for slot_start, slot_end in get_work_slots(d):
         current = slot_start
-
-        overlapping = sorted(
-            (
-                start,
-                end
-            )
-            for start, end in busy
-            if (
-                end > slot_start
-                and start < slot_end
-            )
-        )
-
+        overlapping = sorted((start, end) for start, end in busy if end > slot_start and start < slot_end)
         for busy_start, busy_end in overlapping:
-            if busy_start > current:
-                available = minutes_between(
-                    current,
-                    busy_start,
-                )
-
-                if available >= duration:
-                    return (
-                        current,
-                        current + timedelta(
-                            minutes=duration
-                        ),
-                    )
-
-            # Erst nach einem bestehenden Block
-            # kommt die definierte Pause.
-            current = max(
-                current,
-                busy_end
-                + timedelta(
-                    minutes=GAP_MINUTES
-                ),
-            )
-
-        if (
-            current < slot_end
-            and minutes_between(
-                current,
-                slot_end,
-            ) >= duration
-        ):
-            return (
-                current,
-                current + timedelta(
-                    minutes=duration
-                ),
-            )
-
+            if busy_start > current and minutes_between(current, busy_start) >= duration:
+                return current, current + timedelta(minutes=duration)
+            current = max(current, busy_end + timedelta(minutes=GAP_MINUTES))
+        if current < slot_end and minutes_between(current, slot_end) >= duration:
+            return current, current + timedelta(minutes=duration)
     return None
 
 
-# ============================================================
-# TAGESPLAN
-# ============================================================
-
-def get_day_items(
-    d: date,
-    exams: list[dict],
-    tasks: list[dict],
-    chores: list[dict],
-    study_plans: dict,
-    task_plans: dict,
-) -> list[dict]:
-    """
-    Baut die Anzeige für einen Tag.
-    Es wird nichts neu berechnet -
-    die Lern- und Aufgabenpläne kommen aus
-    study_plans/task_plans.
-    """
+def get_day_items(d: date, exams: list[dict], tasks: list[dict], chores: list[dict], study_plans: dict, task_plans: dict) -> list[dict]:
     items: list[dict] = []
     busy: list[tuple[datetime, datetime]] = []
-
-    # --------------------------------------------------------
-    # Sonntag: nur Ämtli, keine Zeitslots
-    # --------------------------------------------------------
-
     if d.weekday() == 6:
-        for chore in chores:
-            if is_chore_active(chore, d):
-                items.append({
-                    "title": chore.get(
-                        "title",
-                        "Ämtli",
-                    ),
-                    "start": None,
-                    "end": None,
-                    "type": "chore",
-                    "color": COLOR_CHORE,
-                })
-
         return items
-
-    # --------------------------------------------------------
-    # Ämtli
-    # --------------------------------------------------------
-
     for chore in chores:
-        if not is_chore_active(chore, d):
-            continue
-
-        duration = int(
-            chore.get("duration", 30)
-        )
-
-        slot = find_free_slot(
-            d,
-            busy,
-            duration,
-        )
-
-        if not slot:
-            continue
-
-        start, end = slot
-
-        items.append({
-            "title": chore.get(
-                "title",
-                "Ämtli",
-            ),
-            "start": start,
-            "end": end,
-            "type": "chore",
-            "color": COLOR_CHORE,
-        })
-
-        busy.append(
-            (start, end)
-        )
-
-    # --------------------------------------------------------
-    # Freizeit (nicht Donnerstag)
-    # --------------------------------------------------------
-
+        if is_chore_active(chore, d):
+            slot = find_free_slot(d, busy, int(chore.get("duration", 30)))
+            if slot:
+                start, end = slot
+                items.append({"title": chore.get("title", "Ämtli"), "start": start, "end": end, "type": "chore", "color": COLOR_CHORE})
+                busy.append(slot)
     if d.weekday() != 3:
         work_slots = get_work_slots(d)
-
         if work_slots:
-            first_start = work_slots[0][0]
-            last_end = work_slots[-1][1]
-
-            midpoint = (
-                first_start
-                + (last_end - first_start) / 2
-            )
-
-            leisure_start = (
-                midpoint
-                - timedelta(minutes=45)
-            )
-
-            leisure_end = (
-                midpoint
-                + timedelta(minutes=45)
-            )
-
-            if (
-                leisure_start >= first_start
-                and leisure_end <= last_end
-            ):
-                slot_is_free = not any(
-                    not (
-                        leisure_end <= busy_start
-                        or leisure_start >= busy_end
-                    )
-                    for busy_start, busy_end in busy
-                )
-
-                if slot_is_free:
-                    items.append({
-                        "title": "Freizeit",
-                        "start": leisure_start,
-                        "end": leisure_end,
-                        "type": "leisure",
-                        "color": None,
-                    })
-
-                    busy.append(
-                        (
-                            leisure_start,
-                            leisure_end,
-                        )
-                    )
-
-    # --------------------------------------------------------
-    # Lernen
-    # --------------------------------------------------------
-
+            first_start, last_end = work_slots[0][0], work_slots[-1][1]
+            midpoint = first_start + (last_end - first_start) / 2
+            leisure_start, leisure_end = midpoint - timedelta(minutes=45), midpoint + timedelta(minutes=45)
+            free = not any(not (leisure_end <= start or leisure_start >= end) for start, end in busy)
+            if leisure_start >= first_start and leisure_end <= last_end and free:
+                items.append({"title": "Freizeit", "start": leisure_start, "end": leisure_end, "type": "leisure", "color": None})
+                busy.append((leisure_start, leisure_end))
     for index, exam in enumerate(exams):
-        duration = (
-            study_plans
-            .get(index, {})
-            .get(d, 0)
-        )
-
-        if duration <= 0:
-            continue
-
-        slot = find_free_slot(
-            d,
-            busy,
-            duration,
-        )
-
-        if not slot:
-            continue
-
-        start, end = slot
-
-        title = (
-            "Lernen: "
-            + get_exam_title(exam)
-        )
-
-        items.append({
-            "title": title,
-            "start": start,
-            "end": end,
-            "type": "study",
-
-            # Woche/Übersicht:
-            # Farbe des Prüfungsfachs
-            "color": get_exam_color(exam),
-        })
-
-        busy.append(
-            (start, end)
-        )
-
-    # --------------------------------------------------------
-    # Aufträge
-    # --------------------------------------------------------
-
+        duration = study_plans.get(index, {}).get(d, 0)
+        slot = find_free_slot(d, busy, duration) if duration > 0 else None
+        if slot:
+            start, end = slot
+            items.append({"title": "Lernen: " + get_exam_title(exam), "start": start, "end": end, "type": "study", "color": get_exam_color(exam)})
+            busy.append(slot)
     for index, task in enumerate(tasks):
-        duration = (
-            task_plans
-            .get(index, {})
-            .get(d, 0)
-        )
-
-        if duration <= 0:
-            continue
-
-        slot = find_free_slot(
-            d,
-            busy,
-            duration,
-        )
-
-        if not slot:
-            continue
-
-        start, end = slot
-
-        items.append({
-            "title": get_task_title(task),
-            "start": start,
-            "end": end,
-            "type": "task",
-
-            # Index des ursprünglichen Auftrags
-            "task_index": index,
-
-            # Erledigt?
-            "done": bool(task.get("done", False)),
-
-            # Woche/Übersicht:
-            # Farbe des Auftragsfachs
-            "color": get_task_color(task),
-        })
-
-        busy.append(
-            (start, end)
-        )
-
-    items.sort(
-        key=lambda item: (
-            item["start"] is None,
-            item["start"] or datetime.max,
-        )
-    )
-
+        duration = task_plans.get(index, {}).get(d, 0)
+        slot = find_free_slot(d, busy, duration) if duration > 0 else None
+        if slot:
+            start, end = slot
+            items.append({"title": get_task_title(task), "start": start, "end": end, "type": "task", "task_index": index, "done": bool(task.get("done", False)), "color": get_task_color(task)})
+            busy.append(slot)
+    items.sort(key=lambda item: (item["start"] is None, item["start"] or datetime.max))
     return items
 
 
-def format_time_range(
-    item: dict,
-) -> str:
-    start = item["start"]
-    end = item["end"]
-
-    return (
-        f"{start.strftime('%H:%M')} – "
-        f"{end.strftime('%H:%M')}"
-        if start and end
-        else ""
-    )
+def format_time_range(item: dict) -> str:
+    start, end = item.get("start"), item.get("end")
+    return f"{start.strftime('%H:%M')} – {end.strftime('%H:%M')}" if start and end else ""
 
 
-# ============================================================
-# ÜBERSICHT
-# ============================================================
-
-def render_overview(
-    data,
-    exams,
-    tasks,
-    chores,
-    study_plans,
-    task_plans,
-) -> None:
+def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None:
     today = date.today()
-
-    # --------------------------------------------------------
-    # Heute
-    # --------------------------------------------------------
+    success = st.session_state.pop("save_success", None)
+    error = st.session_state.pop("save_error", None)
+    if success:
+        st.success(success)
+    if error:
+        st.error("GitHub-Speicherung fehlgeschlagen.")
+        st.code(error)
 
     render_section_title("Heute")
-
-    today_items = get_day_items(
-        today,
-        exams,
-        tasks,
-        chores,
-        study_plans,
-        task_plans,
-    )
-
+    today_items = get_day_items(today, exams, tasks, chores, study_plans, task_plans)
     if not today_items:
-        st.info(
-            "Für heute ist nichts geplant."
-        )
-
+        st.info("Für heute ist nichts geplant.")
     for index, item in enumerate(today_items):
-        col1, col2 = st.columns(
-            [0.05, 0.95]
-        )
-
+        col1, col2 = st.columns([0.05, 0.95])
+        task = tasks[item["task_index"]] if item.get("type") == "task" else None
         with col1:
-            st.checkbox(
-                "",
-                key=f"today_done_{index}",
-            )
-
+            if task:
+                checked = render_task_checkbox(task, "today_task_done")
+            else:
+                checked = render_daily_checkbox(data, item, today)
         with col2:
-            render_item_card(
-                item["title"],
-                format_time_range(item),
-                item.get("color"),
-            )
-
-    # --------------------------------------------------------
-    # Prüfungen
-    # --------------------------------------------------------
+            render_item_card(item["title"], format_time_range(item), item.get("color"), done=checked)
 
     render_section_title("Prüfungen")
-
     if not exams:
-        st.info(
-            "Keine kommenden Prüfungen."
-        )
-
+        st.info("Keine kommenden Prüfungen.")
     for exam in exams:
-        d = parse_date(
-            exam.get("date")
-        )
-
-        render_item_card(
-            get_exam_title(exam),
-            format_date(d),
-
-            # Übersicht:
-            # Farbe des Prüfungsfachs
-            get_exam_color(exam),
-        )
-
-    # --------------------------------------------------------
-    # Aufträge
-    # --------------------------------------------------------
+        render_item_card(get_exam_title(exam), format_date(parse_date(exam.get("date"))), get_exam_color(exam))
 
     render_section_title("Aufträge")
-
     if not tasks:
-        st.info(
-            "Keine offenen Aufträge."
-        )
-
-    for index, task in enumerate(tasks):
-        d = parse_date(task.get("due"))
-
-        checkbox_key = f"task_done_{index}"
-
-        # Aktuellen gespeicherten Zustand übernehmen
-        if checkbox_key not in st.session_state:
-            st.session_state[checkbox_key] = bool(
-                task.get("done", False)
-            )
-
+        st.info("Keine offenen Aufträge.")
+    for task in tasks:
         col1, col2 = st.columns([0.05, 0.95])
-
         with col1:
-            checked = st.checkbox(
-                "",
-                key=checkbox_key,
-            )
-
+            checked = render_task_checkbox(task, "task_done")
         with col2:
-            render_item_card(
-                get_task_title(task),
-                f"Fällig: {format_date(d)}",
-                get_task_color(task),
-                done=checked,
-            )
-
-        # Nur speichern, wenn sich der Wert geändert hat
-        old_value = bool(task.get("done", False))
-
-        if checked != old_value:
-
-            for original_task in data.get("tasks", []):
-                if original_task.get("id") == task.get("id"):
-                    original_task["done"] = checked
-                    break
-
-            try:
-                st.write(data["tasks"])
-                st.warning("Speicherfunktion wird aufgerufen")
-                save_data(data)
-                st.success("Auftrag gespeichert")
-                load_data.clear()
-                st.rerun()
-
-            except Exception as error:
-                st.error("GitHub-Speicherung fehlgeschlagen")
-                st.exception(error)
-
-
-    # --------------------------------------------------------
-    # Ämtli
-    # --------------------------------------------------------
+            render_item_card(get_task_title(task), f"Fällig: {format_date(parse_date(task.get('due')))}", get_task_color(task), done=checked)
 
     render_section_title("Ämtli")
-
-    active_chores = [
-        c
-        for c in chores
-        if is_chore_active(c, today)
-    ]
-
+    active_chores = [chore for chore in chores if is_chore_active(chore, today)]
     if not active_chores:
-        st.info(
-            "Heute keine Ämtli."
-        )
-
+        st.info("Heute keine Ämtli.")
     for chore in active_chores:
-        render_item_card(
-            chore.get(
-                "title",
-                "Ämtli",
-            ),
-            color=COLOR_CHORE,
-        )
+        render_item_card(chore.get("title", "Ämtli"), color=COLOR_CHORE)
 
 
-# ============================================================
-# WOCHENANSICHT
-# ============================================================
-
-def render_week(
-    exams,
-    tasks,
-    chores,
-    study_plans,
-    task_plans,
-) -> None:
-    if "week_offset" not in st.session_state:
-        st.session_state.week_offset = 0
-
-    col1, col2, col3 = st.columns(
-        [1, 2, 1]
-    )
-
+def render_week(exams, tasks, chores, study_plans, task_plans) -> None:
+    st.session_state.setdefault("week_offset", 0)
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
-        if st.button(
-            "← Vorherige Woche",
-            key="previous_week",
-        ):
+        if st.button("← Vorherige Woche", key="previous_week"):
             st.session_state.week_offset -= 1
             st.rerun()
-
     with col2:
-        render_centered_heading(
-            "Wochenansicht"
-        )
-
+        render_centered_heading("Wochenansicht")
     with col3:
-        if st.button(
-            "Nächste Woche →",
-            key="next_week",
-        ):
+        if st.button("Nächste Woche →", key="next_week"):
             st.session_state.week_offset += 1
             st.rerun()
-
-    if st.button(
-        "Heute",
-        key="today_week",
-    ):
+    if st.button("Heute", key="today_week"):
         st.session_state.week_offset = 0
         st.rerun()
-
     today = date.today()
-
-    monday = (
-        today
-        - timedelta(days=today.weekday())
-        + timedelta(
-            weeks=st.session_state.week_offset
-        )
-    )
-
+    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=st.session_state.week_offset)
     columns = st.columns(7)
-
     for index in range(7):
-        d = monday + timedelta(
-            days=index
-        )
-
+        current_date = monday + timedelta(days=index)
         with columns[index]:
-            st.markdown(
-                f"**{WEEKDAYS[index]}**  \n"
-                f"`{format_short_date(d)}`"
-            )
-
-            items = get_day_items(
-                d,
-                exams,
-                tasks,
-                chores,
-                study_plans,
-                task_plans,
-            )
-
+            st.markdown(f"**{WEEKDAYS[index]}**  \n`{format_short_date(current_date)}`")
+            items = get_day_items(current_date, exams, tasks, chores, study_plans, task_plans)
             if not items:
                 st.caption("—")
-
             for item in items:
-                render_item_card(
-                    item["title"],
-                    format_time_range(item),
-
-                    # Woche:
-                    # Fachfarbe oder Ämtli-Farbe
-                    item.get("color"),
-
-                    # Erledigte Aufträge durchstreichen
-                    done=item.get("done", False),
-                )
+                render_item_card(item["title"], format_time_range(item), item.get("color"), done=item.get("done", False))
 
 
-# ============================================================
-# MONATSKALENDER
-# ============================================================
-
-def render_month(
-    exams,
-    tasks,
-    chores,
-) -> None:
-    if "month_offset" not in st.session_state:
-        st.session_state.month_offset = 0
-
+def render_month(exams, tasks, chores) -> None:
+    st.session_state.setdefault("month_offset", 0)
     today = date.today()
-
-    month_index = (
-        today.year * 12
-        + today.month
-        - 1
-        + st.session_state.month_offset
-    )
-
-    year = month_index // 12
-    month = month_index % 12 + 1
-
-    # --------------------------------------------------------
-    # Navigation
-    # --------------------------------------------------------
-
-    col1, col2, col3 = st.columns(
-        [1, 2, 1]
-    )
-
+    month_index = today.year * 12 + today.month - 1 + st.session_state.month_offset
+    year, month = month_index // 12, month_index % 12 + 1
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
-        if st.button(
-            "← Vorheriger Monat",
-            key="previous_month",
-        ):
+        if st.button("← Vorheriger Monat", key="previous_month"):
             st.session_state.month_offset -= 1
             st.rerun()
-
     with col2:
-        render_centered_heading(
-            f"{MONTH_NAMES[month - 1]} {year}",
-            size="1.35rem",
-        )
-
+        render_centered_heading(f"{MONTH_NAMES[month - 1]} {year}", size="1.35rem")
     with col3:
-        if st.button(
-            "Nächster Monat →",
-            key="next_month",
-        ):
+        if st.button("Nächster Monat →", key="next_month"):
             st.session_state.month_offset += 1
             st.rerun()
-
-    if st.button(
-        "Heute",
-        key="today_month",
-    ):
+    if st.button("Heute", key="today_month"):
         st.session_state.month_offset = 0
         st.rerun()
-
-    # --------------------------------------------------------
-    # Kalenderdaten
-    # --------------------------------------------------------
-
-    weeks = (
-        calendar.Calendar(
-            firstweekday=0
-        ).monthdatescalendar(
-            year,
-            month,
-        )
-    )
-
-    # --------------------------------------------------------
-    # HTML
-    #
-    # In der Monatsansicht zeigen die Punkte NUR:
-    # - Prüfung
-    # - Auftrag
-    # - Ämtli
-    #
-    # Die Fachfarben werden hier bewusst NICHT verwendet.
-    # --------------------------------------------------------
-
+    weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
     style = """
-    * {
-        box-sizing: border-box;
-    }
-
-    body {
-        margin: 0;
-        padding: 0;
-        background: #EEF1EC;
-        font-family: Arial, sans-serif;
-    }
-
-    .calendar {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 5px;
-        width: 100%;
-    }
-
-    .weekday {
-        text-align: center;
-        color: #5B6472;
-        font-family: monospace;
-        font-size: 13px;
-        font-weight: 500;
-        padding: 7px 4px;
-    }
-
-    .calendar-cell {
-        min-height: 115px;
-        background: #FFFFFF;
-        border: 1px solid #DADFD6;
-        border-radius: 10px;
-        padding: 10px;
-        position: relative;
-    }
-
-    .calendar-cell.today {
-        background: #FBF5DF;
-        border: 2px solid #C9A227;
-    }
-
-    .calendar-cell.outside {
-        background: #F4F5F2;
-        opacity: 0.45;
-    }
-
-    .day-number {
-        color: #1C2430;
-        font-family: monospace;
-        font-size: 14px;
-        font-weight: 500;
-    }
-
-    .dots {
-        position: absolute;
-        left: 10px;
-        bottom: 10px;
-        display: flex;
-        gap: 6px;
-    }
-
-    .dot {
-        display: inline-block;
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-    }
-
-    /* Prüfung */
-    .dot-red {
-        background: #C94C4C;
-    }
-
-    /* Auftrag */
-    .dot-gold {
-        background: #C9A227;
-    }
-
-    /* Ämtli */
-    .dot-teal {
-        background: #3D8B87;
-    }
+    *{box-sizing:border-box}body{margin:0;padding:0;background:#EEF1EC;font-family:Arial,sans-serif}
+    .calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;width:100%}
+    .weekday{text-align:center;color:#5B6472;font-family:monospace;font-size:13px;font-weight:500;padding:7px 4px}
+    .calendar-cell{min-height:115px;background:#FFF;border:1px solid #DADFD6;border-radius:10px;padding:10px;position:relative}
+    .calendar-cell.today{background:#FBF5DF;border:2px solid #C9A227}.calendar-cell.outside{background:#F4F5F2;opacity:.45}
+    .day-number{color:#1C2430;font-family:monospace;font-size:14px;font-weight:500}
+    .dots{position:absolute;left:10px;bottom:10px;display:flex;gap:6px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%}
+    .dot-red{background:#C94C4C}.dot-gold{background:#C9A227}.dot-teal{background:#3D8B87}
     """
-
-    cells = "".join(
-        f'<div class="weekday">{wd}</div>'
-        for wd in WEEKDAYS
-    )
-
+    cells = "".join(f'<div class="weekday">{weekday}</div>' for weekday in WEEKDAYS)
     for week in weeks:
-        for d in week:
-            current_date = iso(d)
-
-            classes = [
-                "calendar-cell"
-            ]
-
-            if d.month != month:
-                classes.append(
-                    "outside"
-                )
-
-            if d == today:
-                classes.append(
-                    "today"
-                )
-
+        for current_date in week:
+            classes = ["calendar-cell"]
+            if current_date.month != month:
+                classes.append("outside")
+            if current_date == today:
+                classes.append("today")
+            current_iso = iso(current_date)
             dots = ""
+            if any(exam.get("date") == current_iso for exam in exams):
+                dots += '<span class="dot dot-red"></span>'
+            if any(task.get("due") == current_iso for task in tasks):
+                dots += '<span class="dot dot-gold"></span>'
+            if any(is_chore_active(chore, current_date) for chore in chores):
+                dots += '<span class="dot dot-teal"></span>'
+            cells += f'<div class="{" ".join(classes)}"><div class="day-number">{current_date.day}</div><div class="dots">{dots}</div></div>'
+    html = f'<!DOCTYPE html><html><head><style>{style}</style></head><body><div class="calendar">{cells}</div></body></html>'
+    components.html(html, height=(len(weeks) + 1) * 120 + 20, scrolling=False)
 
-            # ------------------------------------------------
-            # MONAT:
-            # Prüfung = rot
-            # ------------------------------------------------
-
-            if any(
-                exam.get("date")
-                == current_date
-                for exam in exams
-            ):
-                dots += (
-                    '<span class="dot '
-                    'dot-red"></span>'
-                )
-
-            # ------------------------------------------------
-            # MONAT:
-            # Auftrag = gelb
-            # ------------------------------------------------
-
-            if any(
-                task.get("due")
-                == current_date
-                for task in tasks
-            ):
-                dots += (
-                    '<span class="dot '
-                    'dot-gold"></span>'
-                )
-
-            # ------------------------------------------------
-            # MONAT:
-            # Ämtli = türkis
-            # ------------------------------------------------
-
-            if any(
-                is_chore_active(chore, d)
-                for chore in chores
-            ):
-                dots += (
-                    '<span class="dot '
-                    'dot-teal"></span>'
-                )
-
-            cells += (
-                f'<div class="{" ".join(classes)}">'
-                f'<div class="day-number">'
-                f'{d.day}'
-                f'</div>'
-                f'<div class="dots">'
-                f'{dots}'
-                f'</div>'
-                f'</div>'
-            )
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>{style}</style>
-    </head>
-
-    <body>
-        <div class="calendar">
-            {cells}
-        </div>
-    </body>
-    </html>
-    """
-
-    components.html(
-        html,
-        height=(len(weeks) + 1) * 120 + 20,
-        scrolling=False,
-    )
-
-
-# ============================================================
-# HAUPTPROGRAMM
-# ============================================================
 
 def main() -> None:
     inject_css()
-
     st.title("Semesterplaner")
-
-    # --------------------------------------------------------
-    # Daten laden
-    # --------------------------------------------------------
-
     try:
         data = load_data()
-        st.write("Token vorhanden:", bool(st.secrets.get("GITHUB_TOKEN")))
-        st.write("Repo:", st.secrets.get("GITHUB_REPO"))
-        st.write("Branch:", st.secrets.get("GITHUB_BRANCH"))
-        st.write("File:", st.secrets.get("GITHUB_FILE"))
-        if st.button("GitHub-Test"):
-            try:
-                save_data(data)
-                st.success("save_data() wurde ausgeführt")
-            except Exception as e:
-                st.error(str(e))
-
     except Exception as error:
-        st.error(
-            "Die Daten konnten nicht von GitHub geladen werden."
-        )
-
+        st.error("Die Daten konnten nicht von GitHub geladen werden.")
         st.code(str(error))
         st.stop()
-
     exams, tasks, chores = prepare_data(data)
-
-    study_plans, task_plans = build_all_plans(
-        exams,
-        tasks,
-    )
-
-    # --------------------------------------------------------
-    # Kopfbereich
-    # --------------------------------------------------------
-
+    study_plans, task_plans = build_all_plans(exams, tasks)
     col1, col2, col3, col4 = st.columns(4)
-
     with col1:
-        st.metric(
-            "Prüfungen",
-            len(exams),
-        )
-
+        st.metric("Prüfungen", len(exams))
     with col2:
-        st.metric(
-            "Aufträge",
-            len(tasks),
-        )
-
+        st.metric("Aufträge", len(tasks))
     with col3:
-        st.metric(
-            "Ämtli",
-            len(chores),
-        )
-
+        st.metric("Ämtli", len(chores))
     with col4:
-        if st.button(
-            "↻ Aktualisieren",
-            key="reload",
-        ):
+        if st.button("↻ Aktualisieren", key="reload"):
             load_data.clear()
             st.rerun()
-
-    # --------------------------------------------------------
-    # Tabs
-    # --------------------------------------------------------
-
-    tab_overview, tab_week, tab_month = st.tabs(
-        [
-            "Übersicht",
-            "Woche",
-            "Monat",
-        ]
-    )
-
-    # --------------------------------------------------------
-    # Übersicht
-    # --------------------------------------------------------
-
+    tab_overview, tab_week, tab_month = st.tabs(["Übersicht", "Woche", "Monat"])
     with tab_overview:
-        render_overview(
-            data,
-            exams,
-            tasks,
-            chores,
-            study_plans,
-            task_plans,
-        )
-
-    # --------------------------------------------------------
-    # Woche
-    # --------------------------------------------------------
-
+        render_overview(data, exams, tasks, chores, study_plans, task_plans)
     with tab_week:
-        render_week(
-            exams,
-            tasks,
-            chores,
-            study_plans,
-            task_plans,
-        )
-
-    # --------------------------------------------------------
-    # Monat
-    # --------------------------------------------------------
-
+        render_week(exams, tasks, chores, study_plans, task_plans)
     with tab_month:
-        render_month(
-            exams,
-            tasks,
-            chores,
-        )
+        render_month(exams, tasks, chores)
 
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
     main()
