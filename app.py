@@ -17,6 +17,7 @@ st.set_page_config(page_title="Semesterplaner", page_icon="🗓️", layout="wid
 COLOR_EXAM = (201, 76, 76)
 COLOR_TASK = (201, 162, 39)
 COLOR_CHORE = (61, 139, 135)
+COLOR_FIXED = (91, 105, 125)
 COLOR_SUBJECT_DEFAULT = (0, 255, 255)
 SUBJECT_COLORS = {
     "Mathematik": (52, 152, 219), "Deutsch": (155, 89, 182),
@@ -138,7 +139,7 @@ def get_exam_title(exam: dict) -> str:
 
 
 def get_exam_minutes(exam: dict) -> int:
-    return int(exam.get("hours", 0)) * 60 if "hours" in exam else int(exam.get("duration", 45))
+    return round(float(exam.get("hours", 0)) * 60) if "hours" in exam else int(exam.get("duration", 45))
 
 
 def get_task_title(task: dict) -> str:
@@ -146,7 +147,40 @@ def get_task_title(task: dict) -> str:
 
 
 def get_task_minutes(task: dict) -> int:
-    return int(task.get("hours", 0)) * 60 if "hours" in task else int(task.get("duration", 45))
+    return round(float(task.get("hours", 0)) * 60) if "hours" in task else int(task.get("duration", 45))
+
+
+def format_calendar_tooltip(title: str, kind: str, start: datetime, end: datetime, entry: dict | None = None, extra: list[str] | None = None) -> str:
+    """Erstellt einen vollständigen mehrzeiligen Tooltip für einen Kalendereintrag."""
+    lines = [title, f"Art: {kind}", f"Zeit: {start.strftime('%d.%m.%Y, %H:%M')}–{end.strftime('%H:%M')}"]
+    labels = {
+        "subject": "Fach", "fach": "Fach", "title": "Titel", "date": "Prüfungsdatum",
+        "due": "Deadline", "hours": "Aufwand (Stunden)", "duration": "Dauer (Minuten)",
+        "freiwillig": "Freiwillig", "done": "Erledigt", "startDate": "Startdatum",
+        "endDate": "Enddatum", "frequency": "Wiederholung", "recurring": "Wiederkehrend",
+        "interval": "Intervall (Tage)", "intervalDays": "Intervall (Tage)",
+        "start": "Beginn", "end": "Ende", "enabled": "Aktiv", "description": "Beschreibung",
+        "notes": "Notizen", "topic": "Thema", "color": "Farbe",
+    }
+    if entry:
+        for key, value in entry.items():
+            if key == "id" or value is None or value == "":
+                continue
+            if isinstance(value, bool):
+                value_text = "Ja" if value else "Nein"
+            elif key in ("date", "due", "startDate", "endDate"):
+                parsed = parse_date(value)
+                value_text = format_date(parsed) if parsed else str(value)
+            elif key in ("start", "end"):
+                value_text = str(value)
+            elif isinstance(value, (dict, list)):
+                value_text = json.dumps(value, ensure_ascii=False)
+            else:
+                value_text = str(value)
+            lines.append(f"{labels.get(key, key.replace('_', ' ').capitalize())}: {value_text}")
+    if extra:
+        lines.extend(extra)
+    return "\n".join(lines)
 
 
 def get_github_config() -> tuple[str, str, str, str]:
@@ -194,9 +228,11 @@ def decode_github_content(payload: dict) -> dict:
         raise RuntimeError("daten.json konnte nicht gelesen werden.") from error
     if not isinstance(data, dict):
         raise RuntimeError("daten.json muss ein JSON-Objekt enthalten.")
-    for key in ("exams", "tasks", "chores"):
+    for key in ("exams", "tasks", "chores", "fixed_events"):
         data.setdefault(key, [])
     data.setdefault("completions", {})
+    data.setdefault("leisure_overrides", {})
+    data.setdefault("fixed_events", [])
     return data
 
 
@@ -214,7 +250,9 @@ def build_save_content(data: dict) -> dict:
         "exams": data.get("exams", []),
         "tasks": data.get("tasks", []),
         "chores": data.get("chores", []),
+        "fixed_events": data.get("fixed_events", []),
         "completions": data.get("completions", {}),
+        "leisure_overrides": data.get("leisure_overrides", {}),
     }
 
 
@@ -430,6 +468,39 @@ def is_chore_active(chore: dict, d: date) -> bool:
     return (d - start).days % interval == 0
 
 
+def voluntary_until_date(entry: dict, deadline_key: str, finish_early_days: int, get_minutes) -> date | None:
+    """Let an entry stay voluntary until daily 20-minute work must begin."""
+    deadline = parse_date(entry.get(deadline_key))
+    if not deadline:
+        return None
+
+    finish_date = deadline - timedelta(days=finish_early_days)
+    total_minutes = max(0, int(get_minutes(entry)))
+    days_needed = max(1, (total_minutes + 19) // 20)
+
+    # Count backwards from the desired finish date; Sundays are not study days.
+    current = finish_date
+    while current.weekday() == 6:
+        current -= timedelta(days=1)
+    for _ in range(days_needed - 1):
+        current -= timedelta(days=1)
+        while current.weekday() == 6:
+            current -= timedelta(days=1)
+    return current
+
+
+def is_still_voluntary(entry: dict, entry_type: str, today: date | None = None) -> bool:
+    """Missing legacy flags default to voluntary; the flag expires automatically."""
+    if not bool(entry.get("freiwillig", True)):
+        return False
+    today = today or date.today()
+    if entry_type == "exam":
+        start_date = voluntary_until_date(entry, "date", 3, get_exam_minutes)
+    else:
+        start_date = voluntary_until_date(entry, "due", 7, get_task_minutes)
+    return start_date is not None and today < start_date
+
+
 def future_days_until(end_date: date, max_days: int = MAX_STUDY_DAYS) -> list[date]:
     result = []
     current = date.today()
@@ -476,7 +547,21 @@ def build_all_plans(exams: list[dict], tasks: list[dict]):
 
 
 def get_work_slots(d: date) -> list[tuple[datetime, datetime]]:
-    return [(datetime.combine(d, parse_time(start)), datetime.combine(d, parse_time(end))) for start, end in WORK_HOURS.get(d.weekday(), [])]
+    """Liefert verfügbare Zeitfenster; 12:00–13:00 bleibt Mittagspause."""
+    slots = []
+    lunch_start = datetime.combine(d, parse_time("12:00"))
+    lunch_end = datetime.combine(d, parse_time("13:00"))
+    for start, end in WORK_HOURS.get(d.weekday(), []):
+        slot_start = datetime.combine(d, parse_time(start))
+        slot_end = datetime.combine(d, parse_time(end))
+        if slot_end <= lunch_start or slot_start >= lunch_end:
+            slots.append((slot_start, slot_end))
+        else:
+            if slot_start < lunch_start:
+                slots.append((slot_start, lunch_start))
+            if slot_end > lunch_end:
+                slots.append((lunch_end, slot_end))
+    return slots
 
 
 def find_free_slot(d: date, busy: list[tuple[datetime, datetime]], duration: int):
@@ -495,38 +580,100 @@ def find_free_slot(d: date, busy: list[tuple[datetime, datetime]], duration: int
 def get_day_items(d: date, exams: list[dict], tasks: list[dict], chores: list[dict], study_plans: dict, task_plans: dict) -> list[dict]:
     items: list[dict] = []
     busy: list[tuple[datetime, datetime]] = []
+
+    # Feste Termine zuerst eintragen: Sie blockieren ihre Zeit für alle automatischen Einträge.
+    try:
+        fixed_events = load_data().get("fixed_events", [])
+    except Exception:
+        fixed_events = []
+    for event in fixed_events:
+        if parse_date(event.get("date")) != d:
+            continue
+        try:
+            start_dt = datetime.combine(d, parse_time(str(event.get("start", ""))))
+            end_dt = datetime.combine(d, parse_time(str(event.get("end", ""))))
+        except (ValueError, TypeError):
+            continue
+        if end_dt <= start_dt:
+            continue
+        items.append({
+            "title": event.get("title", "Fester Termin"),
+            "start": start_dt,
+            "end": end_dt,
+            "type": "fixed_event",
+            "color": COLOR_FIXED,
+            "tooltip": format_calendar_tooltip(event.get("title", "Fester Termin"), "Fixer Termin", start_dt, end_dt, event),
+        })
+        busy.append((start_dt, end_dt))
+
+    # Auch am Sonntag werden feste Termine angezeigt; automatische Planung bleibt aus.
     if d.weekday() == 6:
-        return items
+        return sorted(items, key=lambda item: item["start"])
+
     for chore in chores:
         if is_chore_active(chore, d):
             slot = find_free_slot(d, busy, int(chore.get("duration", 30)))
             if slot:
                 start, end = slot
-                items.append({"title": chore.get("title", "Ämtli"), "start": start, "end": end, "type": "chore", "color": COLOR_CHORE})
+                chore_title = chore.get("title", "Ämtli")
+                items.append({"title": chore_title, "start": start, "end": end, "type": "chore", "color": COLOR_CHORE,
+                              "tooltip": format_calendar_tooltip(chore_title, "Ämtli", start, end, chore)})
                 busy.append(slot)
-    if d.weekday() != 3:
+    if d.weekday() != 6:
         work_slots = get_work_slots(d)
-        if work_slots:
+        overrides = st.session_state.get("_leisure_overrides_cache", {})
+        # Use the loaded data passed through the day-plan cache when available; load_data is cached.
+        try:
+            overrides = load_data().get("leisure_overrides", {})
+        except Exception:
+            overrides = overrides or {}
+        override = overrides.get(iso(d))
+        leisure_slot = None
+        if override is not None:
+            if override.get("enabled", True):
+                try:
+                    start_dt = datetime.combine(d, parse_time(override["start"]))
+                    end_dt = datetime.combine(d, parse_time(override["end"]))
+                    if end_dt > start_dt and any(start_dt >= slot_start and end_dt <= slot_end for slot_start, slot_end in work_slots):
+                        leisure_slot = (start_dt, end_dt)
+                except (KeyError, ValueError, TypeError):
+                    leisure_slot = None
+        elif d.weekday() != 3 and work_slots:
             first_start, last_end = work_slots[0][0], work_slots[-1][1]
             midpoint = first_start + (last_end - first_start) / 2
-            leisure_start, leisure_end = midpoint - timedelta(minutes=45), midpoint + timedelta(minutes=45)
+            start_dt, end_dt = midpoint - timedelta(minutes=45), midpoint + timedelta(minutes=45)
+            if any(start_dt >= slot_start and end_dt <= slot_end for slot_start, slot_end in work_slots):
+                leisure_slot = (start_dt, end_dt)
+        if leisure_slot:
+            leisure_start, leisure_end = leisure_slot
             free = not any(not (leisure_end <= start or leisure_start >= end) for start, end in busy)
-            if leisure_start >= first_start and leisure_end <= last_end and free:
-                items.append({"title": "Freizeit", "start": leisure_start, "end": leisure_end, "type": "leisure", "color": None})
+            if free:
+                leisure_details = ["Hinweis: automatisch eingeplante Freizeit" if override is None else "Hinweis: individuell festgelegte Freizeit"]
+                if override is not None:
+                    leisure_details.append(f"Individuell aktiviert: {'Ja' if override.get('enabled', True) else 'Nein'}")
+                items.append({"title": "Freizeit", "start": leisure_start, "end": leisure_end, "type": "leisure", "color": None,
+                              "tooltip": format_calendar_tooltip("Freizeit", "Freizeit", leisure_start, leisure_end, override, leisure_details)})
                 busy.append((leisure_start, leisure_end))
     for index, exam in enumerate(exams):
         duration = study_plans.get(index, {}).get(d, 0)
         slot = find_free_slot(d, busy, duration) if duration > 0 else None
         if slot:
             start, end = slot
-            items.append({"title": "Lernen: " + get_exam_title(exam), "start": start, "end": end, "type": "study", "color": get_exam_color(exam)})
+            study_title = "Lernen: " + get_exam_title(exam)
+            items.append({"title": study_title, "start": start, "end": end, "type": "study", "color": get_exam_color(exam),
+                          "tooltip": format_calendar_tooltip(study_title, "Lernzeit", start, end, exam,
+                                                             [f"Geplante Lernzeit an diesem Tag: {duration} Minuten"])})
             busy.append(slot)
     for index, task in enumerate(tasks):
         duration = task_plans.get(index, {}).get(d, 0)
         slot = find_free_slot(d, busy, duration) if duration > 0 else None
         if slot:
             start, end = slot
-            items.append({"title": get_task_title(task), "start": start, "end": end, "type": "task", "task_index": index, "done": bool(task.get("done", False)), "color": get_task_color(task)})
+            task_title = get_task_title(task)
+            items.append({"title": task_title, "start": start, "end": end, "type": "task", "task_index": index,
+                          "done": bool(task.get("done", False)), "color": get_task_color(task),
+                          "tooltip": format_calendar_tooltip(task_title, "Auftrag", start, end, task,
+                                                             [f"Geplante Bearbeitungszeit an diesem Tag: {duration} Minuten"])})
             busy.append(slot)
     items.sort(key=lambda item: (item["start"] is None, item["start"] or datetime.max))
     return items
@@ -547,6 +694,7 @@ def get_entry_identifier(entry_type: str, entry: dict) -> str:
         "exams": ("subject", "title", "date", "hours", "duration"),
         "tasks": ("subject", "fach", "title", "due", "hours", "duration"),
         "chores": ("title", "startDate", "endDate", "duration", "frequency", "interval"),
+        "fixed_events": ("title", "date", "start", "end"),
     }
     identity = {
         key: entry.get(key)
@@ -617,10 +765,39 @@ def add_entry(entry_type: str, entry: dict) -> None:
     st.session_state.pop("save_error", None)
 
 
+def update_entry(entry_type: str, entry_identifier: str, updates: dict) -> None:
+    """Aktualisiert einen Eintrag im aktuellsten GitHub-Datenstand."""
+    load_data.clear()
+    current_data = load_data()
+    entries = current_data.setdefault(entry_type, [])
+    entry = next((item for item in entries if get_entry_identifier(entry_type, item) == entry_identifier), None)
+    if entry is None:
+        raise RuntimeError("Der Eintrag wurde in daten.json nicht gefunden. Bitte aktualisieren und erneut versuchen.")
+    entry.update(updates)
+    save_data(current_data, commit_message="Eintrag bearbeitet")
+    st.session_state["save_success"] = "Änderungen wurden gespeichert."
+    st.session_state.pop("save_error", None)
+
+
+def save_leisure_override(selected_date: date, enabled: bool, start_time: str, end_time: str) -> None:
+    """Speichert eine individuelle Freizeit für einen bestimmten Tag."""
+    start_dt = datetime.combine(selected_date, parse_time(start_time))
+    end_dt = datetime.combine(selected_date, parse_time(end_time))
+    if enabled and end_dt <= start_dt:
+        raise ValueError("Das Ende der Freizeit muss nach dem Beginn liegen.")
+    load_data.clear()
+    current_data = load_data()
+    overrides = current_data.setdefault("leisure_overrides", {})
+    overrides[iso(selected_date)] = {"enabled": bool(enabled), "start": start_time, "end": end_time}
+    save_data(current_data, commit_message="Freizeit bearbeitet")
+    st.session_state["save_success"] = "Freizeit wurde gespeichert."
+    st.session_state.pop("save_error", None)
+
+
 def render_add_entry_forms() -> None:
     """Formulare zum Hinzufügen von Prüfungen, Aufträgen und Ämtli."""
     with st.expander("＋ Eintrag hinzufügen", expanded=False):
-        exam_tab, task_tab, chore_tab = st.tabs(["Prüfung", "Auftrag", "Ämtli"])
+        exam_tab, task_tab, chore_tab, fixed_tab = st.tabs(["Prüfung", "Auftrag", "Ämtli", "Fixer Termin"])
 
         with exam_tab:
             with st.form("add_exam_form", clear_on_submit=True):
@@ -638,6 +815,7 @@ def render_add_entry_forms() -> None:
                                 "subject": subject.strip(),
                                 "date": iso(exam_date),
                                 "hours": hours,
+                                "freiwillig": True,
                             })
                             st.rerun()
                         except Exception as error:
@@ -663,6 +841,7 @@ def render_add_entry_forms() -> None:
                                 "due": iso(due_date),
                                 "hours": hours,
                                 "done": False,
+                                "freiwillig": True,
                             })
                             st.rerun()
                         except Exception as error:
@@ -713,6 +892,235 @@ def render_add_entry_forms() -> None:
                             st.error("Ämtli konnte nicht gespeichert werden.")
                             st.code(str(error))
 
+        with fixed_tab:
+            with st.form("add_fixed_event_form", clear_on_submit=True):
+                fixed_title = st.text_input("Bezeichnung", key="new_fixed_title")
+                fixed_date = st.date_input("Datum", value=date.today(), key="new_fixed_date")
+                fixed_start = st.time_input("Beginn", value=parse_time("08:00"), step=timedelta(minutes=15), key="new_fixed_start")
+                fixed_end = st.time_input("Ende", value=parse_time("09:00"), step=timedelta(minutes=15), key="new_fixed_end")
+                submitted = st.form_submit_button("Fixen Termin hinzufügen", use_container_width=True)
+                if submitted:
+                    if not fixed_title.strip():
+                        st.error("Bitte eine Bezeichnung eingeben.")
+                    elif fixed_end <= fixed_start:
+                        st.error("Das Ende muss nach dem Beginn liegen.")
+                    else:
+                        new_start_dt = datetime.combine(fixed_date, fixed_start)
+                        new_end_dt = datetime.combine(fixed_date, fixed_end)
+                        try:
+                            current_events = load_data().get("fixed_events", [])
+                            overlaps = any(
+                                parse_date(event.get("date")) == fixed_date
+                                and parse_time(str(event.get("start"))) < fixed_end
+                                and parse_time(str(event.get("end"))) > fixed_start
+                                for event in current_events
+                            )
+                            if overlaps:
+                                st.error("Dieser Termin überschneidet sich mit einem anderen fixen Termin.")
+                            else:
+                                add_entry("fixed_events", {
+                                    "id": uuid.uuid4().hex,
+                                    "title": fixed_title.strip(),
+                                    "date": iso(fixed_date),
+                                    "start": fixed_start.strftime("%H:%M"),
+                                    "end": fixed_end.strftime("%H:%M"),
+                                })
+                                st.rerun()
+                        except Exception as error:
+                            st.error("Fixer Termin konnte nicht gespeichert werden.")
+                            st.code(str(error))
+
+    with st.expander("✎ Einträge bearbeiten", expanded=False):
+        edit_exam_tab, edit_task_tab, edit_chore_tab, edit_leisure_tab, edit_fixed_tab = st.tabs(
+            ["Prüfungen", "Aufträge", "Ämtli", "Freizeiten", "Fixe Termine"]
+        )
+
+        with edit_exam_tab:
+            exams_now = load_data().get("exams", [])
+            if not exams_now:
+                st.info("Keine Prüfungen zum Bearbeiten vorhanden.")
+            else:
+                exam_labels = [f"{get_exam_title(e)} — {format_date(parse_date(e.get('date')))} [Eintrag {i + 1}]" for i, e in enumerate(exams_now)]
+                selected_exam_label = st.selectbox("Prüfung auswählen", exam_labels, key="edit_exam_select")
+                exam_index = exam_labels.index(selected_exam_label)
+                exam = exams_now[exam_index]
+                with st.form(f"edit_exam_form_{get_entry_identifier('exams', exam)}"):
+                    new_subject = st.text_input("Fach und Thema", value=str(exam.get("subject") or exam.get("title") or ""))
+                    new_date = st.date_input("Prüfungsdatum", value=parse_date(exam.get("date")) or date.today())
+                    new_hours = st.number_input("Lernaufwand in Stunden", min_value=0.25, value=max(0.25, float(get_exam_minutes(exam) / 60)), step=0.25)
+                    new_voluntary = st.checkbox("Freiwillig", value=bool(exam.get("freiwillig", False)), help="Kann durch den Filter ausgeblendet werden, solange die Vorbereitung noch nicht beginnen muss.")
+                    submitted = st.form_submit_button("Prüfung speichern", use_container_width=True)
+                    if submitted:
+                        if not new_subject.strip():
+                            st.error("Bitte Fach und Thema eingeben.")
+                        else:
+                            try:
+                                update_entry("exams", get_entry_identifier("exams", exam), {"subject": new_subject.strip(), "date": iso(new_date), "hours": new_hours, "freiwillig": new_voluntary})
+                                st.rerun()
+                            except Exception as error:
+                                st.error("Prüfung konnte nicht gespeichert werden.")
+                                st.code(str(error))
+
+        with edit_task_tab:
+            tasks_now = load_data().get("tasks", [])
+            if not tasks_now:
+                st.info("Keine Aufträge zum Bearbeiten vorhanden.")
+            else:
+                task_labels = [f"{get_task_title(t)} — {format_date(parse_date(t.get('due')))} [Eintrag {i + 1}]" for i, t in enumerate(tasks_now)]
+                selected_task_label = st.selectbox("Auftrag auswählen", task_labels, key="edit_task_select")
+                task_index = task_labels.index(selected_task_label)
+                task = tasks_now[task_index]
+                with st.form(f"edit_task_form_{get_entry_identifier('tasks', task)}"):
+                    new_subject = st.text_input("Fach", value=str(task.get("subject") or task.get("fach") or ""))
+                    new_title = st.text_input("Auftrag", value=str(task.get("title") or ""))
+                    new_due = st.date_input("Abgabetermin", value=parse_date(task.get("due")) or date.today())
+                    new_hours = st.number_input("Bearbeitungszeit in Stunden", min_value=0.25, value=max(0.25, float(get_task_minutes(task) / 60)), step=0.25)
+                    new_done = st.checkbox("Auftrag erledigt", value=bool(task.get("done", False)))
+                    new_voluntary = st.checkbox("Freiwillig", value=bool(task.get("freiwillig", False)), help="Kann durch den Filter ausgeblendet werden, solange die Vorbereitung noch nicht beginnen muss.")
+                    submitted = st.form_submit_button("Auftrag speichern", use_container_width=True)
+                    if submitted:
+                        if not new_title.strip():
+                            st.error("Bitte einen Auftragstitel eingeben.")
+                        else:
+                            try:
+                                update_entry("tasks", get_entry_identifier("tasks", task), {"subject": new_subject.strip(), "title": new_title.strip(), "due": iso(new_due), "hours": new_hours, "done": new_done, "freiwillig": new_voluntary})
+                                st.rerun()
+                            except Exception as error:
+                                st.error("Auftrag konnte nicht gespeichert werden.")
+                                st.code(str(error))
+
+        with edit_chore_tab:
+            chores_now = load_data().get("chores", [])
+            if not chores_now:
+                st.info("Keine Ämtli zum Bearbeiten vorhanden.")
+            else:
+                chore_labels = [f"{c.get('title', 'Ämtli')} — {format_date(parse_date(c.get('startDate')))} [Eintrag {i + 1}]" for i, c in enumerate(chores_now)]
+                selected_chore_label = st.selectbox("Ämtli auswählen", chore_labels, key="edit_chore_select")
+                chore_index = chore_labels.index(selected_chore_label)
+                chore = chores_now[chore_index]
+                chore_start = parse_date(chore.get("startDate")) or date.today()
+                with st.form(f"edit_chore_form_{get_entry_identifier('chores', chore)}"):
+                    new_title = st.text_input("Bezeichnung", value=str(chore.get("title") or ""))
+                    new_start = st.date_input("Startdatum", value=chore_start)
+                    has_end = st.checkbox("Enddatum festlegen", value=bool(chore.get("endDate")))
+                    new_end = st.date_input("Enddatum", value=parse_date(chore.get("endDate")) or chore_start)
+                    new_duration = st.number_input("Dauer in Minuten", min_value=5, value=max(5, int(chore.get("duration", 30))), step=5)
+                    new_recurring = st.checkbox("Wiederkehrend", value=(chore.get("frequency") == "recurring" or bool(chore.get("recurring", False))))
+                    new_interval = st.number_input("Intervall in Tagen", min_value=1, value=max(1, int(chore.get("interval", chore.get("intervalDays", 1)) or 1)), step=1)
+                    submitted = st.form_submit_button("Ämtli speichern", use_container_width=True)
+                    if submitted:
+                        if not new_title.strip():
+                            st.error("Bitte eine Bezeichnung eingeben.")
+                        elif has_end and new_end < new_start:
+                            st.error("Das Enddatum darf nicht vor dem Startdatum liegen.")
+                        else:
+                            updates = {"title": new_title.strip(), "startDate": iso(new_start), "duration": int(new_duration), "frequency": "recurring" if new_recurring else "once", "interval": int(new_interval) if new_recurring else 1}
+                            if has_end:
+                                updates["endDate"] = iso(new_end)
+                            else:
+                                updates["endDate"] = None
+                            try:
+                                update_entry("chores", get_entry_identifier("chores", chore), updates)
+                                # Leeres Enddatum entfernen, damit der Datensatz sauber bleibt.
+                                load_data.clear()
+                                current_data = load_data()
+                                saved_chore = next((c for c in current_data.get("chores", []) if get_entry_identifier("chores", c) == get_entry_identifier("chores", chore)), None)
+                                if saved_chore is not None and saved_chore.get("endDate") is None:
+                                    saved_chore.pop("endDate", None)
+                                    save_data(current_data, commit_message="Ämtli bearbeitet")
+                                st.rerun()
+                            except Exception as error:
+                                st.error("Ämtli konnte nicht gespeichert werden.")
+                                st.code(str(error))
+
+        with edit_leisure_tab:
+            leisure_date = st.date_input("Datum der Freizeit", value=date.today(), key="edit_leisure_date")
+            overrides = load_data().get("leisure_overrides", {})
+            override = overrides.get(iso(leisure_date))
+            work_slots = get_work_slots(leisure_date)
+            if override:
+                default_start = str(override.get("start", "17:00"))
+                default_end = str(override.get("end", "18:30"))
+                default_enabled = bool(override.get("enabled", True))
+            elif work_slots:
+                first_start, last_end = work_slots[0][0], work_slots[-1][1]
+                midpoint = first_start + (last_end - first_start) / 2
+                default_start = (midpoint - timedelta(minutes=45)).strftime("%H:%M")
+                default_end = (midpoint + timedelta(minutes=45)).strftime("%H:%M")
+                default_enabled = leisure_date.weekday() != 3
+            else:
+                default_start, default_end, default_enabled = "17:00", "18:30", False
+            with st.form("edit_leisure_form"):
+                enabled = st.checkbox("Freizeit an diesem Tag einplanen", value=default_enabled)
+                start_time = st.text_input("Beginn (HH:MM)", value=default_start, help="24-Stunden-Format, z. B. 17:00")
+                end_time = st.text_input("Ende (HH:MM)", value=default_end, help="24-Stunden-Format, z. B. 18:30")
+                submitted = st.form_submit_button("Freizeit speichern", use_container_width=True)
+                if submitted:
+                    try:
+                        parse_time(start_time)
+                        parse_time(end_time)
+                        if enabled and not any(datetime.combine(leisure_date, parse_time(start_time)) >= slot_start and datetime.combine(leisure_date, parse_time(end_time)) <= slot_end and parse_time(end_time) > parse_time(start_time) for slot_start, slot_end in work_slots):
+                            raise ValueError("Die Freizeit muss vollständig innerhalb eines verfügbaren Zeitfensters liegen.")
+                        save_leisure_override(leisure_date, enabled, start_time, end_time)
+                        st.rerun()
+                    except Exception as error:
+                        st.error("Freizeit konnte nicht gespeichert werden.")
+                        st.code(str(error))
+
+        with edit_fixed_tab:
+            fixed_now = load_data().get("fixed_events", [])
+            if not fixed_now:
+                st.info("Keine fixen Termine zum Bearbeiten vorhanden.")
+            else:
+                fixed_labels = [
+                    f"{event.get('title', 'Fixer Termin')} — {format_date(parse_date(event.get('date')))} {event.get('start', '')} [Eintrag {i + 1}]"
+                    for i, event in enumerate(fixed_now)
+                ]
+                selected_fixed_label = st.selectbox("Fixen Termin auswählen", fixed_labels, key="edit_fixed_select")
+                fixed_event = fixed_now[fixed_labels.index(selected_fixed_label)]
+                fixed_date_value = parse_date(fixed_event.get("date")) or date.today()
+                try:
+                    fixed_start_value = parse_time(str(fixed_event.get("start", "08:00")))
+                    fixed_end_value = parse_time(str(fixed_event.get("end", "09:00")))
+                except ValueError:
+                    fixed_start_value, fixed_end_value = parse_time("08:00"), parse_time("09:00")
+                with st.form(f"edit_fixed_event_form_{get_entry_identifier('fixed_events', fixed_event)}"):
+                    edit_fixed_title = st.text_input("Bezeichnung", value=str(fixed_event.get("title", "")))
+                    edit_fixed_date = st.date_input("Datum", value=fixed_date_value)
+                    edit_fixed_start = st.time_input("Beginn", value=fixed_start_value, step=timedelta(minutes=15))
+                    edit_fixed_end = st.time_input("Ende", value=fixed_end_value, step=timedelta(minutes=15))
+                    save_fixed = st.form_submit_button("Fixen Termin speichern", use_container_width=True)
+                    if save_fixed:
+                        if not edit_fixed_title.strip():
+                            st.error("Bitte eine Bezeichnung eingeben.")
+                        elif edit_fixed_end <= edit_fixed_start:
+                            st.error("Das Ende muss nach dem Beginn liegen.")
+                        else:
+                            try:
+                                event_id = get_entry_identifier("fixed_events", fixed_event)
+                                latest = load_data()
+                                conflicts = any(
+                                    get_entry_identifier("fixed_events", event) != event_id
+                                    and parse_date(event.get("date")) == edit_fixed_date
+                                    and parse_time(str(event.get("start"))) < edit_fixed_end
+                                    and parse_time(str(event.get("end"))) > edit_fixed_start
+                                    for event in latest.get("fixed_events", [])
+                                )
+                                if conflicts:
+                                    st.error("Dieser Termin überschneidet sich mit einem anderen fixen Termin.")
+                                else:
+                                    update_entry("fixed_events", event_id, {
+                                        "title": edit_fixed_title.strip(),
+                                        "date": iso(edit_fixed_date),
+                                        "start": edit_fixed_start.strftime("%H:%M"),
+                                        "end": edit_fixed_end.strftime("%H:%M"),
+                                    })
+                                    st.rerun()
+                            except Exception as error:
+                                st.error("Fixer Termin konnte nicht gespeichert werden.")
+                                st.code(str(error))
+                render_delete_button("fixed_events", fixed_event, "edit_fixed_event")
+
 
 def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None:
     today = date.today()
@@ -737,6 +1145,8 @@ def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None
         with col1:
             if task:
                 checked = render_task_checkbox(task, "today_task_done")
+            elif item.get("type") == "fixed_event":
+                checked = False
             else:
                 checked = render_daily_checkbox(data, item, today, "overview")
         with col2:
@@ -786,6 +1196,7 @@ def render_overview(data, exams, tasks, chores, study_plans, task_plans) -> None
 
 
 def render_week(data, exams, tasks, chores, study_plans, task_plans) -> None:
+    """Outlook-ähnlicher Wochenkalender von 08:00 bis 20:00 Uhr."""
     st.session_state.setdefault("week_offset", 0)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
@@ -801,48 +1212,95 @@ def render_week(data, exams, tasks, chores, study_plans, task_plans) -> None:
     if st.button("Heute", key="today_week"):
         st.session_state.week_offset = 0
         st.rerun()
+
     today = date.today()
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=st.session_state.week_offset)
-    columns = st.columns(7)
-    for index in range(7):
-        current_date = monday + timedelta(days=index)
-        with columns[index]:
-            st.markdown(f"**{WEEKDAYS[index]}**  \n`{format_short_date(current_date)}`")
-            items = get_day_items(current_date, exams, tasks, chores, study_plans, task_plans)
-            if not items:
-                st.caption("—")
-            for item in items:
-                if item.get("type") == "task":
-                    done = bool(item.get("done", False))
-                elif current_date == today:
-                    item_identifier = get_daily_item_identifier(item, current_date)
-                    done = get_daily_completion(data, item_identifier)
-                else:
-                    done = False
+    days = [monday + timedelta(days=i) for i in range(7)]
+    start_hour, end_hour = 8, 20
+    minutes_per_day = (end_hour - start_hour) * 60
+    row_height = 36  # 30-Minuten-Zeile
+    grid_height = 24 * row_height
 
-                render_item_card(
-                    item["title"],
-                    format_time_range(item),
-                    item.get("color"),
-                    done=done,
-                )
+    html = [
+        '<div style="overflow-x:auto;width:100%;">',
+        '<div style="min-width:1000px;display:grid;grid-template-columns:58px repeat(7,minmax(125px,1fr));font-family:Arial,sans-serif;color:#1C2430;">',
+        '<div style="height:58px;border-bottom:1px solid #DADFD6;"></div>'
+    ]
+    for d in days:
+        today_style = 'background:#E5EEF9;' if d == today else 'background:#F7F8F6;'
+        html.append(
+            f'<div style="height:58px;box-sizing:border-box;text-align:center;padding:8px 3px;'
+            f'border-bottom:1px solid #DADFD6;border-left:1px solid #DADFD6;{today_style}">'
+            f'<div style="font-size:12px;color:#5B6472;">{WEEKDAYS[d.weekday()]}</div>'
+            f'<div style="font-size:17px;font-weight:700;margin-top:4px;">{d.day}. {d.strftime("%m.")}</div></div>'
+        )
 
-            due_tasks = [
-                task
-                for task in tasks
-                if parse_date(task.get("due")) == current_date
-            ]
+    # Zeitachse links; eine Zeile entspricht 30 Minuten.
+    html.append(f'<div style="height:{grid_height}px;position:relative;background:#F7F8F6;">')
+    for i in range(24):
+        minute = i * 30
+        label = f"{start_hour + minute // 60:02d}:{minute % 60:02d}"
+        html.append(f'<div style="position:absolute;top:{i * row_height - 8}px;right:7px;font-size:11px;color:#687180;">{label}</div>')
+    html.append('</div>')
 
-            if due_tasks:
-                st.caption("Fällig")
+    for d in days:
+        items = get_day_items(d, exams, tasks, chores, study_plans, task_plans)
+        due_tasks = [task for task in tasks if parse_date(task.get("due")) == d]
+        html.append(f'<div style="height:{grid_height}px;box-sizing:border-box;position:relative;border-left:1px solid #DADFD6;border-bottom:1px solid #DADFD6;background:#fff;'
+                    'background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 35px,#E5E8E3 35px,#E5E8E3 36px);">')
+        # Zusätzliche feinere Linien bei jeder vollen Stunde.
+        for hour in range(1, 12):
+            y = hour * 2 * row_height
+            html.append(f'<div style="position:absolute;left:0;right:0;top:{y}px;border-top:1px solid #CBD1CA;pointer-events:none;"></div>')
+        # Mittagspause bleibt sichtbar und wird nicht als Arbeitszeit verplant.
+        lunch_top = (12 - start_hour) * 60 / 30 * row_height
+        html.append(f'<div style="position:absolute;left:0;right:0;top:{lunch_top}px;height:{2 * row_height}px;background:#F0F1EF;opacity:.95;pointer-events:none;border-top:1px dashed #B6BDB4;border-bottom:1px dashed #B6BDB4;"></div>')
+        html.append(f'<div style="position:absolute;left:3px;right:3px;top:{lunch_top + 5}px;text-align:center;color:#687180;font-size:10px;pointer-events:none;">Mittagspause</div>')
 
+        for item in items:
+            start_dt, end_dt = item.get("start"), item.get("end")
+            if not start_dt or not end_dt:
+                continue
+            start_min = start_dt.hour * 60 + start_dt.minute - start_hour * 60
+            end_min = end_dt.hour * 60 + end_dt.minute - start_hour * 60
+            if end_min <= 0 or start_min >= minutes_per_day:
+                continue
+            start_min = max(0, start_min)
+            end_min = min(minutes_per_day, end_min)
+            top = start_min / minutes_per_day * grid_height
+            height = max(18, (end_min - start_min) / minutes_per_day * grid_height)
+            color = item.get("color")
+            bg = rgb_to_css(color) if color else "#DDE8F7"
+            # Use a slightly tinted event background and a clear left accent.
+            title = escape_html(item.get("title", "Eintrag"))
+            tooltip_text = item.get("tooltip") or format_calendar_tooltip(item.get("title", "Eintrag"), item.get("type", "Eintrag"), start_dt, end_dt)
+            tooltip_attr = escape_html(tooltip_text).replace("\n", "&#10;")
+            time_label = f'{start_dt.strftime("%H:%M")}–{end_dt.strftime("%H:%M")}'
+            done = bool(item.get("done", False))
+            decoration = 'text-decoration:line-through;opacity:.65;' if done else ''
+            html.append(
+                f'<div title="{tooltip_attr}" style="position:absolute;z-index:2;left:3px;right:3px;top:{top:.1f}px;height:{height:.1f}px;'
+                f'box-sizing:border-box;overflow:hidden;padding:3px 4px;border-radius:4px;border-left:3px solid {bg};'
+                f'background:color-mix(in srgb,{bg} 18%,white);font-size:10px;line-height:1.25;{decoration}">'
+                f'<div style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{title}</div>'
+                f'<div style="font-size:9px;color:#4E5968;">{time_label}</div></div>'
+            )
+
+        if due_tasks:
+            due_parts = []
             for task in due_tasks:
-                render_item_card(
-                    f"📌 {get_task_title(task)}",
-                    "Auftrag fällig",
-                    get_task_color(task),
-                    done=bool(task.get("done", False)),
-                )
+                due_title = get_task_title(task)
+                due_start = datetime.combine(d, parse_time("00:00"))
+                due_end = datetime.combine(d, parse_time("23:59"))
+                due_tooltip = escape_html(format_calendar_tooltip(due_title, "Fälliger Auftrag", due_start, due_end, task)).replace("\n", "&#10;")
+                due_parts.append(f'<span title="{due_tooltip}">• {escape_html(due_title)}</span>')
+            due_html = '<br>'.join(due_parts)
+            html.append(f'<div style="position:absolute;z-index:3;left:3px;right:3px;top:3px;background:#FFF4CC;border:1px solid #E5C65B;border-radius:4px;padding:3px;font-size:10px;">Fällig:<br>{due_html}</div>')
+        html.append('</div>')
+
+    html.append('</div></div>')
+    render_html(''.join(html))
+    st.caption("Die Zeilen zeigen 30-Minuten-Schritte. Termine können kürzer sein, z. B. 15 Minuten. 12:00–13:00 ist als Mittagspause reserviert.")
 
 
 def render_selected_day(
@@ -1077,6 +1535,14 @@ def main() -> None:
         st.code(str(error))
         st.stop()
     exams, tasks, chores = prepare_data(data)
+    hide_voluntary = st.checkbox(
+        "Freiwillige Prüfungen und Aufträge ausblenden",
+        value=True,
+        help="Freiwillige Einträge werden automatisch wieder angezeigt, sobald die tägliche 20-Minuten-Vorbereitung beginnen muss.",
+    )
+    if hide_voluntary:
+        exams = [exam for exam in exams if not is_still_voluntary(exam, "exam")]
+        tasks = [task for task in tasks if not is_still_voluntary(task, "task")]
     study_plans, task_plans = build_all_plans(exams, tasks)
     col1, col2, col3, col4 = st.columns(4)
     with col1:
